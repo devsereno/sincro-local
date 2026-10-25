@@ -7,7 +7,7 @@ workflows:
       node: 22
     scripts:
       - name: Instalar
-        script: npm ci
+        script: npm install
       - name: Compilar
         script: npm run build
     artifacts:
