@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@theme {
+  --color-forest: #1c6b45;
+  --color-forest-deep: #0c2419;
+  --color-mint: #9fe0bc;
+  --color-ink: #1a1c19;
+  --color-cream: #f4f1e8;
+  --color-paper: #f7f6f2;
+  --color-line: #e4e0d4;
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--color-forest-deep);
+    color: var(--color-ink);
+  }
+}
+
+@keyframes sincro-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sincro-spin {
+  animation: sincro-spin 12s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sincro-spin {
+    animation: none;
+  }
+}
