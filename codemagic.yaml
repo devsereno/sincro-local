@@ -1,0 +1,14 @@
+workflows:
+  android-apk:
+    name: SincroLocal APK
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+    scripts:
+      - name: Pacotes
+        script: flutter pub get
+      - name: APK
+        script: flutter build apk --release
+    artifacts:
+      - build/app/outputs/**/*.apk
