@@ -1,10 +1,9 @@
-import 'package:flutter_test/flutter_test.dart';
-import 'package:folha_certa/main.dart';
+import "package:flutter_test/flutter_test.dart";
+import "package:sincro_local/main.dart";
 
 void main() {
-  testWidgets('abre tela de login', (tester) async {
-    await tester.pumpWidget(const FolhaCertaApp());
-    expect(find.text('Folha Certa'), findsOneWidget);
-    expect(find.text('Entrar'), findsOneWidget);
+  testWidgets("abre o SincroLocal", (tester) async {
+    await tester.pumpWidget(const SincroApp());
+    expect(find.text("SincroLocal"), findsOneWidget);
   });
 }
