@@ -522,7 +522,7 @@ class Sender {
   }
 
   static Future<({String token, String name})> pair(FoundPeer peer, String code) async {
-    final body = await _post(peer, "/v1/pair", {"code": code}, null);
+    final body = await _post(peer, "/v1/pair", {"code": code}, null, timeout: const Duration(seconds: 8));
     if (body["ok"] != true) throw StateError("Código recusado");
     return (token: body["token"] as String, name: body["name"] as String? ?? peer.name);
   }
@@ -688,9 +688,10 @@ class Sender {
     FoundPeer peer,
     String path,
     Object body,
-    String? token,
-  ) async {
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+    String? token, {
+    Duration timeout = const Duration(seconds: 4),
+  }) async {
+    final client = HttpClient()..connectionTimeout = timeout;
     try {
       final request = await client.postUrl(Uri.parse("http://${peer.address}:${peer.port}$path"));
       if (token != null) request.headers.set("authorization", "Bearer $token");

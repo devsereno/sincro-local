@@ -48,8 +48,41 @@ class _CopyPageState extends State<CopyPage> {
     await DeviceBridge.requestMediaAccess();
     _allowed = await DeviceBridge.hasAllFilesAccess();
     _volumes = await DeviceBridge.volumes();
-    _files = await scanFiles(_volumes);
-    if (mounted) setState(() => _busy = false);
+    final first = await loadGalleryChunk("images", 0, limit: 200);
+    if (mounted) {
+      setState(() {
+        _files = first.files;
+        _busy = false;
+        _status = first.files.isEmpty ? "Lendo a galeria..." : "${first.files.length} fotos. Carregando o resto...";
+      });
+    }
+    _loadRest(first.next);
+  }
+
+  Future<void> _loadRest(int start) async {
+    final seen = _files.map((file) => file.path).toSet();
+    for (final kind in ["images", "videos"]) {
+      var offset = kind == "images" ? start : 0;
+      while (mounted && _files.length < 40000) {
+        final page = await loadGalleryChunk(kind, offset, limit: 400);
+        if (!mounted) return;
+        final added = <LocalFile>[];
+        for (final file in page.files) {
+          final key = file.path.isNotEmpty ? file.path : (file.uri ?? file.name);
+          if (seen.add(key)) added.add(file);
+        }
+        if (added.isNotEmpty) {
+          setState(() {
+            _files.addAll(added);
+            _status = "${_files.length} arquivos. Carregando...";
+          });
+        }
+        if (page.done || page.next <= offset) break;
+        offset = page.next;
+      }
+    }
+    if (!mounted) return;
+    setState(() => _status = "${_files.length} arquivos prontos.");
   }
 
   VolumeInfo? get _internal => _volumes.cast<VolumeInfo?>().firstWhere((item) => item?.removable == false, orElse: () => null);
@@ -146,7 +179,7 @@ class _CopyPageState extends State<CopyPage> {
   @override
   Widget build(BuildContext context) {
     if (_busy && _files.isEmpty && !_done) {
-      return Scaffold(appBar: AppBar(title: const Text("Copiar")), body: const Center(child: Text("Lendo a galeria...")));
+      return Scaffold(appBar: AppBar(title: const Text("Copiar")), body: Center(child: Text(_status)));
     }
     if (_plan.isEmpty) {
       return Scaffold(
@@ -158,9 +191,11 @@ class _CopyPageState extends State<CopyPage> {
               child: Text(
                 _files.isEmpty
                     ? "Nenhuma foto ou vídeo. Toque em Permitir e escolha Permitir tudo."
-                    : _sd == null
-                        ? "Nenhum cartão SD encontrado. No modo híbrido ou só interna, a cópia usa a memória interna."
-                        : "Cartão ${_sd!.label}: ${formatBytes(_sd!.freeBytes)} livres. Interna: ${formatBytes(_internal?.freeBytes ?? 0)}.",
+                    : _status.isEmpty
+                        ? (_sd == null
+                            ? "Nenhum cartão SD encontrado. No modo híbrido ou só interna, a cópia usa a memória interna."
+                            : "Cartão ${_sd!.label}: ${formatBytes(_sd!.freeBytes)} livres. Interna: ${formatBytes(_internal?.freeBytes ?? 0)}.")
+                        : _status,
               ),
             ),
             if (_files.isEmpty)

@@ -4,6 +4,7 @@ import "device_bridge.dart";
 import "history_store.dart";
 import "settings_store.dart";
 import "ui/brand_mark.dart";
+import "ui/card_page.dart";
 import "ui/copy_page.dart";
 import "ui/history_page.dart";
 import "ui/settings_page.dart";
@@ -113,6 +114,14 @@ class HomePage extends StatelessWidget {
               Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => CopyPage(settings: settings, history: history)),
               );
+            },
+          ),
+          _Action(
+            icon: Icons.folder_open,
+            title: "O que está no cartão",
+            subtitle: "Ver e apagar o que já foi copiado para o cartão ou a interna.",
+            onTap: () {
+              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CardPage()));
             },
           ),
           _Action(

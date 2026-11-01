@@ -265,9 +265,9 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
   }
 
   Future<void> _enterDirect(String ssid, String pass, String label) async {
-    setState(() => _direct = "Aceite a rede de $label uma vez. Não vai ficar pedindo de novo.");
+    setState(() => _direct = "Aceite a rede de $label uma vez no aviso do Android. Se não aparecer, use o aparelho da lista.");
     await DeviceBridge.p2pJoinNet(ssid, pass);
-    for (var i = 0; i < 24; i++) {
+    for (var i = 0; i < 16; i++) {
       await Future.delayed(const Duration(milliseconds: 500));
       final status = await DeviceBridge.p2pStatus();
       final message = status["message"]?.toString() ?? "";
@@ -277,6 +277,9 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
         return;
       }
       setState(() => _direct = message.isEmpty ? "Entrando na rede de $label..." : message);
+    }
+    if (mounted) {
+      setState(() => _direct = "A rede direta não abriu. Toque no aparelho da lista (Wi-Fi de casa) e pareie.");
     }
   }
 
@@ -318,8 +321,30 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
       _status = "Conferindo o código...";
     });
     try {
-      final paired = await Sender.pair(peer, code);
+      var target = peer;
+      ({String token, String name})? paired;
+      try {
+        paired = await Sender.pair(target, code);
+      } catch (error) {
+        if (target.address.startsWith("192.168.49.")) {
+          final lan = _peers.cast<FoundPeer?>().firstWhere(
+            (item) => item != null && !item.address.startsWith("192.168.49.") && item.port == target.port,
+            orElse: () => null,
+          );
+          if (lan != null && mounted) {
+            setState(() => _status = "Rede direta não respondeu. Tentando pelo Wi-Fi de casa...");
+            target = lan;
+            paired = await Sender.pair(target, code);
+          } else {
+            rethrow;
+          }
+        } else {
+          rethrow;
+        }
+      }
+      if (paired == null) throw StateError("não pareou");
       if (!mounted) return;
+      _peer = target;
       _peerLabel = paired.name;
       _token = paired.token;
       _resume = await ResumeStore.loadSession();
@@ -328,7 +353,11 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     } catch (error) {
       if (mounted) {
         setState(() => _busy = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Não pareou: $error")));
+        final text = error.toString();
+        final hint = peer.address.startsWith("192.168.49.")
+            ? " A rede direta não abriu. Toque no aparelho da lista (o do Wi-Fi de casa) e pareie de novo."
+            : "";
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Não pareou: $text$hint")));
       }
     }
   }
