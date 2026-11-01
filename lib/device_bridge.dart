@@ -135,4 +135,36 @@ class DeviceBridge {
       await _channel.invokeMethod("release");
     } catch (_) {}
   }
+
+  static Future<bool> p2pOwn() async {
+    try {
+      return await _channel.invokeMethod<bool>("p2pOwn") == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> p2pFind() async {
+    try {
+      return await _channel.invokeMethod<bool>("p2pFind") == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> p2pJoin(String address) async {
+    try {
+      return await _channel.invokeMethod<bool>("p2pJoin", {"address": address}) == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<Map<String, dynamic>> p2pStatus() async {
+    try {
+      final raw = await _channel.invokeMethod<dynamic>("p2pStatus");
+      if (raw is Map) return raw.map((key, value) => MapEntry(key.toString(), value));
+    } catch (_) {}
+    return {};
+  }
 }

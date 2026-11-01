@@ -2,6 +2,7 @@ import "dart:async";
 import "dart:convert";
 import "dart:io";
 import "dart:math";
+import "dart:typed_data";
 
 import "package:battery_plus/battery_plus.dart";
 import "package:flutter/foundation.dart";
@@ -9,6 +10,7 @@ import "package:flutter/foundation.dart";
 import "device_bridge.dart";
 import "planner.dart";
 import "scanner.dart";
+import "tcp_pipe.dart";
 import "transfer.dart";
 
 const beaconPort = 45821;
@@ -64,6 +66,7 @@ class IncomingRoom extends ChangeNotifier {
   final String deviceName;
   final String code = makeCode();
   HttpServer? _server;
+  ServerSocket? _tcp;
   RawDatagramSocket? _beacon;
   Timer? _timer;
   String? token;
@@ -73,6 +76,7 @@ class IncomingRoom extends ChangeNotifier {
   List<Placement> plan = [];
   bool decided = false;
   int port = 0;
+  int tcpPort = 0;
   String? ip;
   int receivedBytes = 0;
   int totalBytes = 0;
@@ -109,6 +113,13 @@ class IncomingRoom extends ChangeNotifier {
     _server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
     port = _server!.port;
     _server!.listen(_onRequest, onError: (Object _) {});
+    try {
+      _tcp = await ServerSocket.bind(InternetAddress.anyIPv4, directTcpPort);
+    } catch (_) {
+      _tcp = await ServerSocket.bind(InternetAddress.anyIPv4, 0);
+    }
+    tcpPort = _tcp!.port;
+    _tcp!.listen((socket) => unawaited(_serveChunks(socket)), onError: (Object _) {});
     _beacon = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
     _beacon!.broadcastEnabled = true;
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _announce());
@@ -117,6 +128,11 @@ class IncomingRoom extends ChangeNotifier {
   }
 
   List<Placement> Function(List<Offer> offers) _buildPlan = (offers) => [];
+
+  void showAddress(String value) {
+    ip = value;
+    notifyListeners();
+  }
 
   void _announce() {
     final text = "SINCRO1|$deviceName|$port";
@@ -301,29 +317,25 @@ class IncomingRoom extends ChangeNotifier {
           return;
         }
         current = item.name;
-        final category = index < offers.length ? offers[index].category : "Arquivos";
-        final destTarget = await incomingTarget(Directory("$root/SincroLocal/${shelfFor(category)}"), item.name, item.bytes);
-        if (destTarget.alreadyThere) {
-          saved.add((name: item.name, bytes: item.bytes, dest: item.dest!.name, sourcePath: destTarget.file.path));
-          status = "Já estava em ${shelfFor(category)}/${item.name}";
-          notifyListeners();
+        final prepared = await preparePut(id);
+        if (prepared == null) {
+          await _json(request, 409, {"ok": false, "error": "destino indisponível"});
+          return;
+        }
+        if (prepared.already) {
+          noteDone(prepared.name, prepared.bytes, prepared.destName, prepared.file.path);
           await _json(request, 201, {"ok": true, "sha256": "existente"});
           return;
         }
-        final dest = destTarget.file;
+        final dest = prepared.file;
         final hash = await writeHashed(
           source: request,
           dest: dest,
-          total: item.bytes,
+          total: prepared.bytes,
           cancel: cancel,
-          onProgress: (written) {
-            receivedBytes = saved.fold<int>(0, (sum, file) => sum + file.bytes) + written;
-            notifyListeners();
-          },
+          onProgress: noteChunk,
         );
-        saved.add((name: item.name, bytes: item.bytes, dest: item.dest!.name, sourcePath: dest.path));
-        status = "Recebido ${item.name}";
-        notifyListeners();
+        noteDone(prepared.name, prepared.bytes, prepared.destName, dest.path);
         await _json(request, 201, {"ok": true, "sha256": hash});
         return;
       }
@@ -366,10 +378,109 @@ class IncomingRoom extends ChangeNotifier {
     return false;
   }
 
+  Future<({File file, bool already, int bytes, String name, String destName})?> preparePut(String id) async {
+    final index = offers.indexWhere((offer) => offer.id == id);
+    if (index < 0 || index >= plan.length || !decided) return null;
+    final item = plan[index];
+    if (item.dest == null) return null;
+    final root = item.dest == Dest.sd ? _sdPath : _internalPath;
+    if (root == null) return null;
+    current = item.name;
+    final category = index < offers.length ? offers[index].category : "Arquivos";
+    final target = await incomingTarget(Directory("$root/SincroLocal/${shelfFor(category)}"), item.name, item.bytes);
+    return (file: target.file, already: target.alreadyThere, bytes: item.bytes, name: item.name, destName: item.dest!.name);
+  }
+
+  void noteChunk(int written) {
+    receivedBytes = saved.fold<int>(0, (sum, file) => sum + file.bytes) + written;
+    notifyListeners();
+  }
+
+  void noteDone(String name, int bytes, String destName, String path) {
+    saved.add((name: name, bytes: bytes, dest: destName, sourcePath: path));
+    status = "Recebido $name";
+    receivedBytes = saved.fold<int>(0, (sum, file) => sum + file.bytes);
+    notifyListeners();
+  }
+
+  Future<void> _serveChunks(Socket socket) async {
+    final reader = ChunkReader(socket);
+    try {
+      socket.setOption(SocketOption.tcpNoDelay, true);
+      if (await reader.line() != "SINCROFILE") return;
+      while (!cancel.cancelled) {
+        final header = await reader.line();
+        if (header == "BYE" || header.isEmpty) break;
+        final meta = jsonDecode(header);
+        if (meta is! Map || meta["token"] != token) {
+          socket.write("NO\n");
+          await socket.flush();
+          break;
+        }
+        final prepared = await preparePut(meta["id"].toString());
+        if (prepared == null) {
+          socket.write("NO\n");
+          await socket.flush();
+          continue;
+        }
+        if (prepared.already) {
+          noteDone(prepared.name, prepared.bytes, prepared.destName, prepared.file.path);
+          socket.write("SKIP\n");
+          await socket.flush();
+          continue;
+        }
+        socket.write("GO\n");
+        await socket.flush();
+        final out = prepared.file.openWrite();
+        var got = 0;
+        try {
+          while (got < prepared.bytes) {
+            while (cancel.paused && !cancel.cancelled) {
+              await Future.delayed(const Duration(milliseconds: 200));
+            }
+            if (cancel.cancelled) break;
+            final rest = prepared.bytes - got;
+            final size = rest > chunkBytes ? chunkBytes : rest;
+            final block = await reader.take(size);
+            out.add(block);
+            got += block.length;
+            noteChunk(got);
+            socket.write("ACK\n");
+            await socket.flush();
+          }
+          await out.flush();
+          await out.close();
+          if (got != prepared.bytes) {
+            if (await prepared.file.exists()) await prepared.file.delete();
+            socket.write("ERR\n");
+            await socket.flush();
+            continue;
+          }
+          noteDone(prepared.name, prepared.bytes, prepared.destName, prepared.file.path);
+          socket.write("OK\n");
+          await socket.flush();
+        } catch (error) {
+          try {
+            await out.close();
+          } catch (_) {}
+          if (await prepared.file.exists()) await prepared.file.delete();
+          rethrow;
+        }
+      }
+    } catch (_) {
+    } finally {
+      await reader.close();
+      try {
+        await socket.close();
+      } catch (_) {}
+    }
+  }
+
   Future<void> close() async {
     _timer?.cancel();
     _beacon?.close();
     await _server?.close(force: true);
+    await _tcp?.close();
   }
 }
 
@@ -469,6 +580,59 @@ class Sender {
     await _post(peer, "/v1/bye", {}, token);
   }
 
+  static Future<void> _uploadChunks(
+    FoundPeer peer,
+    String token,
+    Offer offer,
+    File file,
+    void Function(int sent) onProgress,
+    Future<void> Function() gate,
+  ) async {
+    final socket = await Socket.connect(peer.address, directTcpPort, timeout: const Duration(seconds: 3));
+    final reader = ChunkReader(socket);
+    try {
+      socket.setOption(SocketOption.tcpNoDelay, true);
+      final length = await file.length();
+      socket.write("SINCROFILE\n");
+      socket.write("${jsonEncode({"token": token, "id": offer.id, "name": offer.name, "bytes": length})}\n");
+      await socket.flush();
+      final answer = await reader.line().timeout(const Duration(seconds: 8));
+      if (answer == "SKIP") {
+        onProgress(length);
+        return;
+      }
+      if (answer != "GO") throw StateError("direto recusou");
+      final pending = BytesBuilder(copy: false);
+      var held = 0;
+      var sent = 0;
+      Future<void> push() async {
+        if (held == 0) return;
+        socket.add(pending.takeBytes());
+        held = 0;
+        await socket.flush();
+        final ack = await reader.line().timeout(const Duration(seconds: 30));
+        if (ack != "ACK") throw StateError("bloco sem confirmação");
+      }
+
+      await for (final data in file.openRead()) {
+        await gate();
+        pending.add(data);
+        held += data.length;
+        sent += data.length;
+        onProgress(sent);
+        if (held >= chunkBytes) await push();
+      }
+      await push();
+      final end = await reader.line().timeout(const Duration(seconds: 30));
+      if (end != "OK") throw StateError("o outro não confirmou o arquivo");
+    } finally {
+      await reader.close();
+      try {
+        await socket.close();
+      } catch (_) {}
+    }
+  }
+
   static Future<void> upload(
     FoundPeer peer,
     String token,
@@ -477,6 +641,12 @@ class Sender {
     void Function(int sent) onProgress,
     Future<void> Function() gate,
   ) async {
+    try {
+      await _uploadChunks(peer, token, offer, file, onProgress, gate);
+      return;
+    } on SocketException {
+      // A porta direta não abriu. Segue pelo HTTP.
+    }
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
     try {
       final request = await client.putUrl(Uri.parse("http://${peer.address}:${peer.port}/v1/file/${offer.id}"));

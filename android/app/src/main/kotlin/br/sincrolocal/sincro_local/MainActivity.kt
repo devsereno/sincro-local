@@ -22,6 +22,9 @@ import java.net.NetworkInterface
 class MainActivity : FlutterActivity() {
     private var multicastLock: WifiManager.MulticastLock? = null
     private var pendingMedia: MethodChannel.Result? = null
+    private var pendingDirect: MethodChannel.Result? = null
+    private var pendingDirectAction: (() -> Unit)? = null
+    private val direct by lazy { DirectLink(this) }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -89,13 +92,46 @@ class MainActivity : FlutterActivity() {
                         stopService(Intent(this, HoldService::class.java))
                         result.success(null)
                     }
+                    "p2pStatus" -> result.success(direct.status())
+                    "p2pOwn" -> startDirect(result) { direct.own() }
+                    "p2pFind" -> startDirect(result) { direct.find() }
+                    "p2pJoin" -> {
+                        val address = call.argument<String>("address") ?: ""
+                        startDirect(result) { direct.join(address) }
+                    }
+                    "p2pStop" -> {
+                        direct.stop()
+                        result.success(direct.status())
+                    }
                     else -> result.notImplemented()
                 }
             }
     }
 
+    private fun startDirect(result: MethodChannel.Result, action: () -> Unit) {
+        if (!direct.allowed()) {
+            if (pendingDirect != null) {
+                result.success(false)
+                return
+            }
+            pendingDirect = result
+            pendingDirectAction = action
+            requestPermissions(direct.permissions(), 45823)
+            return
+        }
+        action()
+        result.success(true)
+    }
+
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 45823) {
+            if (direct.allowed()) pendingDirectAction?.invoke()
+            pendingDirect?.success(direct.allowed())
+            pendingDirect = null
+            pendingDirectAction = null
+            return
+        }
         if (requestCode != 45822) return
         pendingMedia?.success(mediaAccess() != "none")
         pendingMedia = null
