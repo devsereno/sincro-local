@@ -10,6 +10,7 @@ import "../planner.dart";
 import "../scanner.dart";
 import "../settings_store.dart";
 import "../transfer.dart";
+import "file_groups.dart";
 
 class CopyPage extends StatefulWidget {
   const CopyPage({super.key, required this.settings, required this.history});
@@ -166,10 +167,6 @@ class _CopyPageState extends State<CopyPage> {
       );
     }
     if (_plan.isEmpty) {
-      final groups = <String, List<LocalFile>>{};
-      for (final file in _files) {
-        groups.putIfAbsent(file.category, () => []).add(file);
-      }
       return Scaffold(
         appBar: AppBar(title: const Text("Escolher arquivos")),
         body: Column(
@@ -185,34 +182,22 @@ class _CopyPageState extends State<CopyPage> {
             Expanded(
               child: _files.isEmpty
                   ? const Center(child: Text("Nada encontrado em Fotos, Vídeos, Documentos ou Downloads."))
-                  : ListView(
-                      children: [
-                        for (final entry in groups.entries) ...[
-                          ListTile(title: Text(entry.key, style: const TextStyle(fontWeight: FontWeight.w800))),
-                          for (final file in entry.value)
-                            CheckboxListTile(
-                              value: _selected.contains(file.path),
-                              title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                              subtitle: Text(formatBytes(file.bytes)),
-                              onChanged: (value) {
-                                setState(() {
-                                  if (value == true) {
-                                    _selected.add(file.path);
-                                  } else {
-                                    _selected.remove(file.path);
-                                  }
-                                });
-                              },
-                            ),
-                        ],
-                      ],
+                  : GroupedFileList(
+                      files: _files,
+                      selected: _selected,
+                      onChanged: (next) => setState(() {
+                        _selected
+                          ..clear()
+                          ..addAll(next);
+                      }),
                     ),
             ),
             Padding(
               padding: const EdgeInsets.all(16),
-              child: FilledButton(
+              child: FilledButton.icon(
                 onPressed: _selected.isEmpty ? null : () => setState(_buildPlan),
-                child: Text("Ver destino (${_selected.length})"),
+                icon: const Icon(Icons.sd_card),
+                label: Text("Ver destino (${_selected.length})"),
               ),
             ),
           ],

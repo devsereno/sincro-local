@@ -6,6 +6,11 @@ workflows:
     environment:
       flutter: stable
     scripts:
+      - name: Ícone
+        script: |
+          mkdir -p assets android/app/src/main/res/mipmap-mdpi android/app/src/main/res/mipmap-hdpi android/app/src/main/res/mipmap-xhdpi android/app/src/main/res/mipmap-xxhdpi android/app/src/main/res/mipmap-xxxhdpi
+          python3 -c "import base64,pathlib; pathlib.Path('assets/brand.png').write_bytes(base64.b64decode(pathlib.Path('tool/brand.b64').read_text()))"
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do cp assets/brand.png android/app/src/main/res/mipmap-$d/ic_launcher.png; done
       - name: Pacotes
         script: flutter pub get
       - name: APK

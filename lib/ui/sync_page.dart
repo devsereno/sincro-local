@@ -13,6 +13,7 @@ import "../planner.dart";
 import "../scanner.dart";
 import "../settings_store.dart";
 import "../sync.dart";
+import "file_groups.dart";
 
 class SyncPage extends StatefulWidget {
   const SyncPage({super.key, required this.settings, required this.history});
@@ -250,11 +251,26 @@ class _SyncPageState extends State<SyncPage> {
     }
   }
 
+  Future<void> _end() async {
+    await _room?.close();
+    if (mounted) Navigator.pop(context);
+  }
+
   @override
   Widget build(BuildContext context) {
     final room = _room;
     return Scaffold(
-      appBar: AppBar(title: const Text("Sincronizar")),
+      appBar: AppBar(
+        title: const Text("Sincronizar"),
+        actions: [
+          if (_role != null)
+            TextButton.icon(
+              onPressed: _end,
+              icon: const Icon(Icons.link_off),
+              label: const Text("Encerrar"),
+            ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(20),
         child: _role == null
@@ -263,14 +279,19 @@ class _SyncPageState extends State<SyncPage> {
                 children: [
                   const Text("Os dois aparelhos precisam estar na mesma rede Wi-Fi."),
                   const SizedBox(height: 16),
-                  FilledButton(onPressed: _receive, child: const Text("Receber neste aparelho")),
+                  FilledButton.icon(
+                    onPressed: _receive,
+                    icon: const Icon(Icons.qr_code_2),
+                    label: const Text("Receber neste aparelho"),
+                  ),
                   const SizedBox(height: 8),
-                  OutlinedButton(
+                  OutlinedButton.icon(
                     onPressed: () {
                       setState(() => _role = "send");
                       _scanPeers();
                     },
-                    child: const Text("Enviar para o outro"),
+                    icon: const Icon(Icons.photo_camera_outlined),
+                    label: const Text("Enviar para o outro"),
                   ),
                 ],
               )
@@ -287,7 +308,7 @@ class _SyncPageState extends State<SyncPage> {
       children: [
         Text(room.status, style: const TextStyle(fontWeight: FontWeight.w800)),
         const SizedBox(height: 12),
-        const Text("Código deste aparelho", style: TextStyle(color: Colors.black54)),
+        Text("Código deste aparelho", style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
         Text(room.code, style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w800, letterSpacing: 8)),
         if (link.isNotEmpty) ...[
           const SizedBox(height: 8),
@@ -376,29 +397,24 @@ class _SyncPageState extends State<SyncPage> {
           Text("${formatBytes(_sent)} de ${formatBytes(_total)}"),
         ],
         Expanded(
-          child: ListView(
-            children: [
-              for (final file in _files)
-                CheckboxListTile(
-                  value: _selected.contains(file.path),
-                  title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text("${file.category} · ${formatBytes(file.bytes)}"),
-                  onChanged: _busy
-                      ? null
-                      : (value) {
-                          setState(() {
-                            if (value == true) {
-                              _selected.add(file.path);
-                            } else {
-                              _selected.remove(file.path);
-                            }
-                          });
-                        },
-                ),
-            ],
+          child: GroupedFileList(
+            files: _files,
+            selected: _selected,
+            enabled: !_busy,
+            onChanged: (next) => setState(() {
+              _selected
+                ..clear()
+                ..addAll(next);
+            }),
           ),
         ),
-        FilledButton(onPressed: _busy || _selected.isEmpty ? null : _send, child: const Text("Enviar")),
+        Row(
+          children: [
+            Expanded(child: OutlinedButton.icon(onPressed: _busy ? null : _end, icon: const Icon(Icons.close), label: const Text("Encerrar"))),
+            const SizedBox(width: 8),
+            Expanded(child: FilledButton.icon(onPressed: _busy || _selected.isEmpty ? null : _send, icon: const Icon(Icons.send), label: const Text("Enviar"))),
+          ],
+        ),
       ],
     );
   }

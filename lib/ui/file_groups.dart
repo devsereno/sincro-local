@@ -148,21 +148,16 @@ class _CategoryBlock extends StatelessWidget {
             tristate: true,
             onChanged: enabled ? (value) => onToggleAll(value == true) : null,
           ),
-          title: Text(name, style: const TextStyle(fontWeight: FontWeight.w800)),
-          subtitle: Text("$marked de ${files.length} · ${formatBytes(bytes)}"),
-          trailing: Icon(open ? Icons.expand_less : Icons.expand_more),
-          onTap: onToggleOpen,
-          iconColor: scheme.primary,
-        ),
-        Padding(
-          padding: const EdgeInsets.only(left: 12),
-          child: Row(
+          title: Row(
             children: [
               Icon(iconForCategory(name), color: scheme.primary),
               const SizedBox(width: 8),
-              Text(open ? "Toque de novo para encolher" : "Toque para ver os arquivos", style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12)),
+              Expanded(child: Text(name, style: const TextStyle(fontWeight: FontWeight.w800))),
             ],
           ),
+          subtitle: Text("$marked de ${files.length} · ${formatBytes(bytes)} nesta categoria"),
+          trailing: Icon(open ? Icons.expand_less : Icons.expand_more),
+          onTap: onToggleOpen,
         ),
         if (open)
           for (final file in files)
