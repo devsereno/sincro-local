@@ -2,6 +2,7 @@ package br.sincrolocal.sincro_local
 
 import android.content.Intent
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
@@ -14,6 +15,8 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 
 class MainActivity : FlutterActivity() {
+    private var multicastLock: WifiManager.MulticastLock? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "br.sincrolocal.sincro_local/device")
@@ -27,6 +30,19 @@ class MainActivity : FlutterActivity() {
                     "deviceModel" -> result.success(Build.MODEL ?: "Este aparelho")
                     "wifiAddress" -> result.success(wifiAddress())
                     "volumes" -> result.success(volumes())
+                    "multicast" -> {
+                        val wifi = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+                        val on = call.argument<Boolean>("on") == true
+                        if (on) {
+                            if (multicastLock == null) {
+                                multicastLock = wifi.createMulticastLock("sincro").apply { setReferenceCounted(false) }
+                            }
+                            if (multicastLock?.isHeld != true) multicastLock?.acquire()
+                        } else if (multicastLock?.isHeld == true) {
+                            multicastLock?.release()
+                        }
+                        result.success(null)
+                    }
                     "hold" -> {
                         val intent = Intent(this, HoldService::class.java)
                         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
