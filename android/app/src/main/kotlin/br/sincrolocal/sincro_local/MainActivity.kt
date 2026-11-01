@@ -1,11 +1,14 @@
 package br.sincrolocal.sincro_local
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import android.provider.MediaStore
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -16,6 +19,7 @@ import java.net.NetworkInterface
 
 class MainActivity : FlutterActivity() {
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var pendingMedia: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -26,6 +30,32 @@ class MainActivity : FlutterActivity() {
                     "requestAllFilesAccess" -> {
                         requestAllFiles()
                         result.success(null)
+                    }
+                    "mediaAccess" -> result.success(mediaAccess())
+                    "requestMediaAccess" -> requestMedia(result)
+                    "openSettings" -> {
+                        openAppSettings()
+                        result.success(null)
+                    }
+                    "gallery" -> Thread {
+                        try {
+                            val rows = queryGallery()
+                            runOnUiThread { result.success(rows) }
+                        } catch (error: Exception) {
+                            runOnUiThread { result.error("gallery", error.message, null) }
+                        }
+                    }.start()
+                    "stageMedia" -> {
+                        val path = call.argument<String>("path")
+                        val uri = call.argument<String>("uri")
+                        Thread {
+                            try {
+                                val staged = stageMedia(path, uri)
+                                runOnUiThread { result.success(staged) }
+                            } catch (error: Exception) {
+                                runOnUiThread { result.error("stage", error.message, null) }
+                            }
+                        }.start()
                     }
                     "deviceModel" -> result.success(Build.MODEL ?: "Este aparelho")
                     "wifiAddress" -> result.success(wifiAddress())
@@ -55,6 +85,136 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != 45822) return
+        pendingMedia?.success(mediaAccess() != "none")
+        pendingMedia = null
+    }
+
+    private fun granted(permission: String): Boolean {
+        return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun mediaPerms(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= 34) {
+            arrayOf(
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+            )
+        } else if (Build.VERSION.SDK_INT >= 33) {
+            arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+
+    private fun mediaAccess(): String {
+        if (Build.VERSION.SDK_INT >= 33) {
+            val images = granted(Manifest.permission.READ_MEDIA_IMAGES)
+            val videos = granted(Manifest.permission.READ_MEDIA_VIDEO)
+            if (images && videos) return "all"
+            val partial = Build.VERSION.SDK_INT >= 34 && granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+            if (partial || images || videos) return "partial"
+            return "none"
+        }
+        if (Build.VERSION.SDK_INT < 23) return "all"
+        return if (granted(Manifest.permission.READ_EXTERNAL_STORAGE)) "all" else "none"
+    }
+
+    private fun requestMedia(result: MethodChannel.Result) {
+        if (mediaAccess() == "all") {
+            result.success(true)
+            return
+        }
+        if (pendingMedia != null) {
+            result.success(false)
+            return
+        }
+        pendingMedia = result
+        requestPermissions(mediaPerms(), 45822)
+    }
+
+    private fun openAppSettings() {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+        intent.data = Uri.parse("package:$packageName")
+        startActivity(intent)
+    }
+
+    private fun queryGallery(): List<Map<String, Any>> {
+        val rows = mutableListOf<Map<String, Any>>()
+        queryCollection(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "Fotos", rows)
+        queryCollection(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "Vídeos", rows)
+        return rows
+    }
+
+    private fun queryCollection(uri: Uri, category: String, rows: MutableList<Map<String, Any>>) {
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.SIZE,
+            MediaStore.MediaColumns.DATA,
+        )
+        val sort = "${MediaStore.MediaColumns.DATE_ADDED} DESC"
+        val cursor = try {
+            contentResolver.query(uri, projection, null, null, sort)
+        } catch (_: Exception) {
+            null
+        } ?: return
+        cursor.use {
+            val idCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            val nameCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+            val sizeCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+            val dataCol = it.getColumnIndex(MediaStore.MediaColumns.DATA)
+            var added = 0
+            while (it.moveToNext() && added < 12000) {
+                val id = it.getLong(idCol)
+                val name = it.getString(nameCol)?.takeIf { value -> value.isNotBlank() } ?: "arquivo"
+                if (!name.startsWith(".")) {
+                    var bytes = if (it.isNull(sizeCol)) 0L else it.getLong(sizeCol)
+                    val path = if (dataCol >= 0) it.getString(dataCol) ?: "" else ""
+                    if (bytes <= 0 && path.isNotEmpty()) {
+                        try {
+                            val file = File(path)
+                            if (file.exists()) bytes = file.length()
+                        } catch (_: Exception) {
+                        }
+                    }
+                    if (bytes > 0) {
+                        val content = android.content.ContentUris.withAppendedId(uri, id).toString()
+                        rows.add(
+                            mapOf(
+                                "path" to path.ifEmpty { content },
+                                "name" to name,
+                                "bytes" to bytes,
+                                "category" to category,
+                                "uri" to content,
+                            ),
+                        )
+                        added++
+                    }
+                }
+            }
+        }
+    }
+
+    private fun stageMedia(path: String?, uri: String?): String {
+        if (!path.isNullOrEmpty() && path.startsWith("/")) {
+            val file = File(path)
+            if (file.exists() && file.canRead() && file.length() > 0) return file.absolutePath
+        }
+        if (uri.isNullOrEmpty()) throw IllegalStateException("sem caminho legível")
+        val parsed = Uri.parse(uri)
+        val dir = File(cacheDir, "sincro-stage").apply { mkdirs() }
+        val dest = File(dir, "${uri.hashCode().toUInt()}-${parsed.lastPathSegment ?: "item"}")
+        if (dest.exists() && dest.length() > 0) return dest.absolutePath
+        contentResolver.openInputStream(parsed)?.use { input ->
+            dest.outputStream().use { output -> input.copyTo(output) }
+        } ?: throw IllegalStateException("não abriu o arquivo")
+        return dest.absolutePath
     }
 
     private fun hasAllFiles(): Boolean {

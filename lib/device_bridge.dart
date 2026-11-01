@@ -72,6 +72,47 @@ class DeviceBridge {
     }
   }
 
+  static Future<String> mediaAccess() async {
+    try {
+      return await _channel.invokeMethod<String>("mediaAccess") ?? "none";
+    } catch (_) {
+      return "none";
+    }
+  }
+
+  static Future<bool>? _asking;
+
+  static Future<bool> requestMediaAccess() {
+    final current = _asking;
+    if (current != null) return current;
+    final run = _channel.invokeMethod<bool>("requestMediaAccess").then((value) => value == true).catchError((_) => false).whenComplete(() {
+      _asking = null;
+    });
+    _asking = run;
+    return run;
+  }
+
+  static Future<void> openSettings() async {
+    try {
+      await _channel.invokeMethod("openSettings");
+    } catch (_) {}
+  }
+
+  static Future<List<Map<dynamic, dynamic>>> gallery() async {
+    final raw = await _channel.invokeMethod<List<dynamic>>("gallery");
+    if (raw == null) return [];
+    return [
+      for (final item in raw)
+        if (item is Map) Map<dynamic, dynamic>.from(item),
+    ];
+  }
+
+  static Future<String> stageMedia(String path, String uri) async {
+    final staged = await _channel.invokeMethod<String>("stageMedia", {"path": path, "uri": uri});
+    if (staged == null || staged.isEmpty) throw StateError("não consegui abrir o arquivo");
+    return staged;
+  }
+
   static Future<void> multicast(bool on) async {
     try {
       await _channel.invokeMethod("multicast", {"on": on});

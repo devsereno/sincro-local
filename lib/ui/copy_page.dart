@@ -45,9 +45,10 @@ class _CopyPageState extends State<CopyPage> {
   }
 
   Future<void> _prepare() async {
+    await DeviceBridge.requestMediaAccess();
     _allowed = await DeviceBridge.hasAllFilesAccess();
     _volumes = await DeviceBridge.volumes();
-    if (_allowed) _files = await scanFiles(_volumes);
+    _files = await scanFiles(_volumes);
     if (mounted) setState(() => _busy = false);
   }
 
@@ -107,9 +108,11 @@ class _CopyPageState extends State<CopyPage> {
         final root = item.dest == Dest.sd ? _sd?.path : _internal?.path;
         if (root == null) continue;
         setState(() => _current = item.name);
+        final local = _files.cast<LocalFile?>().firstWhere((file) => file?.path == item.sourcePath, orElse: () => null);
+        final source = local == null ? File(item.sourcePath) : await readableFile(local);
         final dest = await uniqueFile(Directory("$root/SincroLocal"), item.name);
         await copyHashed(
-          source: File(item.sourcePath),
+          source: source,
           dest: dest,
           cancel: _cancel,
           onProgress: (written) {
@@ -142,29 +145,7 @@ class _CopyPageState extends State<CopyPage> {
   @override
   Widget build(BuildContext context) {
     if (_busy && _files.isEmpty && !_done) {
-      return Scaffold(appBar: AppBar(title: const Text("Copiar")), body: Center(child: Text(_allowed ? "Procurando arquivos..." : "Verificando acesso...")));
-    }
-    if (!_allowed) {
-      return Scaffold(
-        appBar: AppBar(title: const Text("Copiar")),
-        body: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text("O Android precisa da permissão de todos os arquivos para ler a interna e gravar no cartão SD."),
-              const SizedBox(height: 16),
-              FilledButton(
-                onPressed: () async {
-                  await DeviceBridge.requestAllFilesAccess();
-                  await _prepare();
-                },
-                child: const Text("Abrir permissão"),
-              ),
-            ],
-          ),
-        ),
-      );
+      return Scaffold(appBar: AppBar(title: const Text("Copiar")), body: const Center(child: Text("Lendo a galeria...")));
     }
     if (_plan.isEmpty) {
       return Scaffold(
@@ -172,13 +153,42 @@ class _CopyPageState extends State<CopyPage> {
         body: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
               child: Text(
-                _sd == null
-                    ? "Nenhum cartão SD encontrado. No modo híbrido ou só interna, a cópia usa a memória interna."
-                    : "Cartão ${_sd!.label}: ${formatBytes(_sd!.freeBytes)} livres. Interna: ${formatBytes(_internal?.freeBytes ?? 0)}.",
+                _files.isEmpty
+                    ? "Nenhuma foto ou vídeo. Toque em Permitir e escolha Permitir tudo."
+                    : _sd == null
+                        ? "Nenhum cartão SD encontrado. No modo híbrido ou só interna, a cópia usa a memória interna."
+                        : "Cartão ${_sd!.label}: ${formatBytes(_sd!.freeBytes)} livres. Interna: ${formatBytes(_internal?.freeBytes ?? 0)}.",
               ),
             ),
+            if (_files.isEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: FilledButton.icon(
+                  onPressed: () async {
+                    final granted = await DeviceBridge.requestMediaAccess();
+                    if (!granted && await DeviceBridge.mediaAccess() == "none") {
+                      await DeviceBridge.openSettings();
+                    }
+                    await _prepare();
+                  },
+                  icon: const Icon(Icons.photo_library_outlined),
+                  label: const Text("Permitir fotos e vídeos"),
+                ),
+              ),
+            if (!_allowed)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    await DeviceBridge.requestAllFilesAccess();
+                    await _prepare();
+                  },
+                  icon: const Icon(Icons.sd_card),
+                  label: const Text("Autorizar gravação no cartão SD"),
+                ),
+              ),
             Expanded(
               child: _files.isEmpty
                   ? const Center(child: Text("Nada encontrado em Fotos, Vídeos, Documentos ou Downloads."))

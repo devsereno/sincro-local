@@ -73,80 +73,68 @@ class _GroupedFileListState extends State<GroupedFileList> {
     ];
     final allOn = widget.files.isNotEmpty && widget.files.every((file) => widget.selected.contains(file.path));
     final total = widget.files.fold<int>(0, (sum, file) => sum + file.bytes);
-    final chosen = widget.files.where((file) => widget.selected.contains(file.path));
-    final chosenBytes = chosen.fold<int>(0, (sum, file) => sum + file.bytes);
 
-    return ListView(
-      children: [
-        CheckboxListTile(
-          value: allOn,
-          onChanged: widget.enabled && widget.files.isNotEmpty ? (value) => _setAll(widget.files, value == true) : null,
-          secondary: Icon(Icons.select_all, color: scheme.primary),
-          title: const Text("Selecionar tudo", style: TextStyle(fontWeight: FontWeight.w800)),
-          subtitle: Text("${widget.files.length} arquivo(s) · ${formatBytes(total)} · marcados ${formatBytes(chosenBytes)}"),
-        ),
-        for (final name in names)
-          _CategoryBlock(
-            name: name,
-            files: groups[name]!,
-            selected: widget.selected,
-            open: _open.contains(name),
-            enabled: widget.enabled,
-            onToggleOpen: () {
-              setState(() {
-                if (!_open.add(name)) _open.remove(name);
-              });
-            },
-            onToggleAll: (on) => _setAll(groups[name]!, on),
-            onToggleOne: (path, on) {
-              final next = {...widget.selected};
-              if (on) {
-                next.add(path);
-              } else {
-                next.remove(path);
-              }
-              widget.onChanged(next);
-            },
-          ),
-      ],
+    return ListView.builder(
+      itemCount: 1 + names.fold<int>(0, (sum, name) => sum + 1 + (_open.contains(name) ? groups[name]!.length : 0)),
+      itemBuilder: (context, index) {
+        if (index == 0) {
+          return CheckboxListTile(
+            value: allOn,
+            onChanged: widget.enabled && widget.files.isNotEmpty ? (value) => _setAll(widget.files, value == true) : null,
+            secondary: Icon(Icons.select_all, color: scheme.primary),
+            title: const Text("Selecionar tudo", style: TextStyle(fontWeight: FontWeight.w800)),
+            subtitle: Text("${widget.files.length} arquivos · ${formatBytes(total)}"),
+          );
+        }
+        var cursor = index - 1;
+        for (final name in names) {
+          if (cursor == 0) {
+            return _categoryTile(context, name, groups[name]!);
+          }
+          cursor--;
+          final files = groups[name]!;
+          if (_open.contains(name)) {
+            if (cursor < files.length) {
+              final file = files[cursor];
+              return CheckboxListTile(
+                value: widget.selected.contains(file.path),
+                onChanged: widget.enabled
+                    ? (value) {
+                        final next = {...widget.selected};
+                        if (value == true) {
+                          next.add(file.path);
+                        } else {
+                          next.remove(file.path);
+                        }
+                        widget.onChanged(next);
+                      }
+                    : null,
+                secondary: Icon(iconForCategory(file.category), color: scheme.primary),
+                title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(formatBytes(file.bytes)),
+              );
+            }
+            cursor -= files.length;
+          }
+        }
+        return const SizedBox.shrink();
+      },
     );
   }
-}
 
-class _CategoryBlock extends StatelessWidget {
-  const _CategoryBlock({
-    required this.name,
-    required this.files,
-    required this.selected,
-    required this.open,
-    required this.enabled,
-    required this.onToggleOpen,
-    required this.onToggleAll,
-    required this.onToggleOne,
-  });
-
-  final String name;
-  final List<LocalFile> files;
-  final Set<String> selected;
-  final bool open;
-  final bool enabled;
-  final VoidCallback onToggleOpen;
-  final ValueChanged<bool> onToggleAll;
-  final void Function(String path, bool on) onToggleOne;
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _categoryTile(BuildContext context, String name, List<LocalFile> files) {
     final scheme = Theme.of(context).colorScheme;
     final bytes = files.fold<int>(0, (sum, file) => sum + file.bytes);
-    final marked = files.where((file) => selected.contains(file.path)).length;
-    final allOn = marked == files.length;
+    final marked = files.where((file) => widget.selected.contains(file.path)).length;
+    final allOn = marked == files.length && files.isNotEmpty;
+    final open = _open.contains(name);
     return Column(
       children: [
         ListTile(
           leading: Checkbox(
             value: allOn ? true : (marked == 0 ? false : null),
             tristate: true,
-            onChanged: enabled ? (value) => onToggleAll(value == true) : null,
+            onChanged: widget.enabled ? (value) => _setAll(files, value == true) : null,
           ),
           title: Row(
             children: [
@@ -157,17 +145,12 @@ class _CategoryBlock extends StatelessWidget {
           ),
           subtitle: Text("$marked de ${files.length} · ${formatBytes(bytes)} nesta categoria"),
           trailing: Icon(open ? Icons.expand_less : Icons.expand_more),
-          onTap: onToggleOpen,
+          onTap: () {
+            setState(() {
+              if (!_open.add(name)) _open.remove(name);
+            });
+          },
         ),
-        if (open)
-          for (final file in files)
-            CheckboxListTile(
-              value: selected.contains(file.path),
-              onChanged: enabled ? (value) => onToggleOne(file.path, value == true) : null,
-              secondary: Icon(iconForCategory(file.category), color: scheme.primary),
-              title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text(formatBytes(file.bytes)),
-            ),
         const Divider(height: 1),
       ],
     );

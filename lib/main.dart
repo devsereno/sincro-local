@@ -1,5 +1,6 @@
 import "package:flutter/material.dart";
 
+import "device_bridge.dart";
 import "history_store.dart";
 import "settings_store.dart";
 import "ui/brand_mark.dart";
@@ -31,6 +32,9 @@ class _SincroAppState extends State<SincroApp> {
     super.initState();
     SettingsStore.load().then((value) {
       if (mounted) setState(() => settings = value);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      DeviceBridge.requestMediaAccess();
     });
   }
 

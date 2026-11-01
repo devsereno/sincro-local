@@ -1,5 +1,4 @@
 import "dart:async";
-import "dart:io";
 
 import "package:battery_plus/battery_plus.dart";
 import "package:flutter/material.dart";
@@ -160,25 +159,55 @@ class _SyncPageState extends State<SyncPage> {
     try {
       final token = await Sender.pair(peer, code);
       if (!mounted) return;
-      setState(() {
-        _token = token;
-        _status = "Pareado. Procurando arquivos neste aparelho...";
-      });
-      final files = await scanFiles(await DeviceBridge.volumes());
-      if (!mounted) return;
-      setState(() {
-        _files = files;
-        _busy = false;
-        _status = files.isEmpty
-            ? "Pareado, mas não achei fotos, vídeos ou documentos."
-            : "Pareado. Escolha o que enviar.";
-      });
+      await _loadLibrary(token);
     } catch (error) {
       if (mounted) {
         setState(() => _busy = false);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Não pareou: $error")));
       }
     }
+  }
+
+  Future<void> _loadLibrary(String token) async {
+    setState(() {
+      _token = token;
+      _busy = true;
+      _status = "Pedindo permissão para ler fotos e vídeos...";
+    });
+    var access = await DeviceBridge.mediaAccess();
+    if (access != "all") access = await DeviceBridge.requestMediaAccess() ? await DeviceBridge.mediaAccess() : access;
+    if (!mounted) return;
+    if (access == "none") {
+      setState(() {
+        _busy = false;
+        _files = [];
+        _status = "Sem permissão para a galeria. Toque em Permitir fotos e vídeos e escolha Permitir tudo.";
+      });
+      return;
+    }
+    setState(() => _status = "Lendo a galeria deste aparelho...");
+    final files = await scanFiles(await DeviceBridge.volumes());
+    if (!mounted) return;
+    final photos = files.where((file) => file.category == "Fotos").length;
+    final videos = files.where((file) => file.category == "Vídeos").length;
+    setState(() {
+      _files = files;
+      _busy = false;
+      _status = files.isEmpty
+          ? "Não achei fotos nem vídeos. Se o Android perguntou, escolha Permitir tudo."
+          : "Pareado. $photos fotos e $videos vídeos.";
+    });
+  }
+
+  Future<void> _allowGallery() async {
+    final granted = await DeviceBridge.requestMediaAccess();
+    final access = await DeviceBridge.mediaAccess();
+    if (!granted && access == "none") {
+      await DeviceBridge.openSettings();
+      return;
+    }
+    final token = _token;
+    if (token != null) await _loadLibrary(token);
   }
 
   Future<void> _send() async {
@@ -233,7 +262,7 @@ class _SyncPageState extends State<SyncPage> {
       final saved = <HistoryFile>[];
       for (final item in todo) {
         setState(() => _status = item.offer.name);
-        await Sender.upload(peer, token, item.offer, File(item.file.path), (sent) {
+        await Sender.upload(peer, token, item.offer, await readableFile(item.file), (sent) {
           if (mounted) setState(() => _sent = done + sent);
         });
         done += item.offer.bytes;
@@ -392,10 +421,17 @@ class _SyncPageState extends State<SyncPage> {
       children: [
         Text(_status),
         const SizedBox(height: 8),
-        if (_busy) ...[
-          LinearProgressIndicator(value: _total == 0 ? null : _sent / _total),
+        if (_busy && _files.isEmpty) const LinearProgressIndicator(),
+        if (_busy && _total > 0) ...[
+          LinearProgressIndicator(value: _sent / _total),
           Text("${formatBytes(_sent)} de ${formatBytes(_total)}"),
         ],
+        if (_files.isEmpty && !_busy)
+          FilledButton.icon(
+            onPressed: _allowGallery,
+            icon: const Icon(Icons.photo_library_outlined),
+            label: const Text("Permitir fotos e vídeos"),
+          ),
         Expanded(
           child: GroupedFileList(
             files: _files,
