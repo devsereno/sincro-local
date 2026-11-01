@@ -3,6 +3,7 @@ import "dart:convert";
 import "dart:io";
 import "dart:math";
 
+import "package:battery_plus/battery_plus.dart";
 import "package:flutter/foundation.dart";
 
 import "device_bridge.dart";
@@ -72,6 +73,12 @@ class IncomingRoom extends ChangeNotifier {
   bool finished = false;
   bool pauseHere = false;
   bool pauseThere = false;
+  bool keepGoing = false;
+  int? peerBattery;
+  int jobBytes = 0;
+  int jobDone = 0;
+  int part = 1;
+  int parts = 1;
   bool get paused => pauseHere || pauseThere;
   final List<({String name, int bytes, String dest, String sourcePath})> saved = [];
   final CancelFlag cancel = CancelFlag();
@@ -99,12 +106,21 @@ class IncomingRoom extends ChangeNotifier {
   }
 
   Future<void> accept(String internalPath, String? sdPath) async {
-    decided = true;
+    keepGoing = true;
     _internalPath = internalPath;
     _sdPath = sdPath;
-    totalBytes = plan.where((item) => item.dest != null).fold(0, (sum, item) => sum + item.bytes);
-    status = "Recebendo arquivos";
+    _armReceipt();
     notifyListeners();
+  }
+
+  void _armReceipt() {
+    decided = true;
+    finished = false;
+    receivedBytes = 0;
+    current = "";
+    saved.clear();
+    totalBytes = plan.where((item) => item.dest != null).fold(0, (sum, item) => sum + item.bytes);
+    status = parts > 1 ? "Recebendo parte $part de $parts" : "Recebendo arquivos";
   }
 
   void setLocalPause(bool value) {
@@ -149,11 +165,31 @@ class IncomingRoom extends ChangeNotifier {
         offers = [
           for (final item in body["files"] as List<dynamic>) Offer.fromJson(item as Map<String, dynamic>),
         ];
+        peerBattery = (body["battery"] as num?)?.toInt();
+        part = (body["part"] as num?)?.toInt() ?? 1;
+        parts = (body["parts"] as num?)?.toInt() ?? 1;
+        jobBytes = (body["jobBytes"] as num?)?.toInt() ?? offers.fold(0, (sum, file) => sum + file.bytes);
+        jobDone = (body["jobDone"] as num?)?.toInt() ?? 0;
         plan = _buildPlan(offers);
-        decided = false;
-        status = "O outro aparelho quer enviar ${offers.length} arquivo(s). Confira o destino.";
+        if (keepGoing && _internalPath != null) {
+          _armReceipt();
+        } else {
+          decided = false;
+          finished = false;
+          receivedBytes = 0;
+          status = "O outro aparelho quer enviar ${offers.length} arquivo(s). Confira o destino.";
+        }
         notifyListeners();
         await _json(request, 200, {"ok": true});
+        return;
+      }
+      if (request.method == "POST" && path == "/v1/pulse") {
+        final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map<String, dynamic>;
+        final remote = (body["battery"] as num?)?.toInt();
+        if (remote != null && remote >= 0) peerBattery = remote;
+        final level = await _batteryLevel();
+        notifyListeners();
+        await _json(request, 200, {"here": pauseHere, "there": pauseThere, "battery": level});
         return;
       }
       if (request.method == "GET" && path == "/v1/pause") {
@@ -169,6 +205,7 @@ class IncomingRoom extends ChangeNotifier {
       if (request.method == "GET" && path == "/v1/decision") {
         await _json(request, 200, {
           "ready": decided,
+          "battery": await _batteryLevel(),
           "placements": [
             for (final item in plan) {"id": idFor(item), "dest": item.dest?.name, "reason": item.reason},
           ],
@@ -211,8 +248,10 @@ class IncomingRoom extends ChangeNotifier {
         return;
       }
       if (request.method == "POST" && path == "/v1/finish") {
+        final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map<String, dynamic>;
+        if (body["more"] != true) parts = part;
         finished = true;
-        status = "Transferência verificada";
+        status = part < parts ? "Parte $part concluída. Esperando a próxima." : "Transferência verificada";
         notifyListeners();
         await _json(request, 200, {"ok": true});
         return;
@@ -240,6 +279,14 @@ class IncomingRoom extends ChangeNotifier {
     _timer?.cancel();
     _beacon?.close();
     await _server?.close(force: true);
+  }
+}
+
+Future<int> _batteryLevel() async {
+  try {
+    return await Battery().batteryLevel;
+  } catch (_) {
+    return -1;
   }
 }
 
@@ -278,8 +325,24 @@ class Sender {
     return body["token"] as String;
   }
 
-  static Future<void> manifest(FoundPeer peer, String token, List<Offer> files) async {
-    await _post(peer, "/v1/manifest", {"files": files.map((file) => file.toJson()).toList()}, token);
+  static Future<void> manifest(
+    FoundPeer peer,
+    String token,
+    List<Offer> files, {
+    required int battery,
+    required int part,
+    required int parts,
+    required int jobBytes,
+    required int jobDone,
+  }) async {
+    await _post(peer, "/v1/manifest", {
+      "files": files.map((file) => file.toJson()).toList(),
+      "battery": battery,
+      "part": part,
+      "parts": parts,
+      "jobBytes": jobBytes,
+      "jobDone": jobDone,
+    }, token);
   }
 
   static Future<Map<String, dynamic>> decision(FoundPeer peer, String token) async {
@@ -315,6 +378,10 @@ class Sender {
     }
   }
 
+  static Future<Map<String, dynamic>> pulse(FoundPeer peer, String token, int battery) {
+    return _post(peer, "/v1/pulse", {"battery": battery}, token);
+  }
+
   static Future<Map<String, dynamic>> pauseState(FoundPeer peer, String token) {
     return _get(peer, "/v1/pause", token);
   }
@@ -323,8 +390,8 @@ class Sender {
     await _post(peer, "/v1/pause", {"paused": paused}, token);
   }
 
-  static Future<void> finish(FoundPeer peer, String token) async {
-    await _post(peer, "/v1/finish", {}, token);
+  static Future<void> finish(FoundPeer peer, String token, {bool more = false}) async {
+    await _post(peer, "/v1/finish", {"more": more}, token);
   }
 
   static Future<Map<String, dynamic>> _post(

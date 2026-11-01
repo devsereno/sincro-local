@@ -66,6 +66,29 @@ String formatEta(double seconds) {
   return "$h h ${m % 60} min";
 }
 
+const double typicalBytesPerSecond = 2 * 1024 * 1024;
+
+class ChargeForecast {
+  const ChargeForecast({required this.now, required this.atEnd, required this.seconds, required this.needsCharger});
+
+  final int now;
+  final int atEnd;
+  final double seconds;
+  final bool needsCharger;
+}
+
+ChargeForecast chargeForecast({required int level, required int bytes, double bytesPerSecond = typicalBytesPerSecond}) {
+  final speed = bytesPerSecond <= 0 ? typicalBytesPerSecond : bytesPerSecond;
+  final seconds = bytes <= 0 ? 0.0 : bytes / speed;
+  final atEnd = (level - (seconds / 3600) * 12).round().clamp(0, 100);
+  return ChargeForecast(
+    now: level,
+    atEnd: atEnd,
+    seconds: seconds,
+    needsCharger: level <= 20 || atEnd < 20,
+  );
+}
+
 List<Placement> placeFiles({
   required List<({String name, int bytes, String path})> files,
   required Mode mode,

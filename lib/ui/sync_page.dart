@@ -13,6 +13,7 @@ import "../scanner.dart";
 import "../settings_store.dart";
 import "../sync.dart";
 import "file_groups.dart";
+import "battery_meter.dart";
 import "transfer_panel.dart";
 
 class SyncPage extends StatefulWidget {
@@ -49,6 +50,11 @@ class _SyncPageState extends State<SyncPage> {
   String _currentName = "";
   int _fileIndex = 0;
   int _fileCount = 0;
+  int _part = 1;
+  int _parts = 1;
+  int? _otherNow;
+  int _myBattery = -1;
+  DateTime? _batteryAt;
   Timer? _poll;
 
   VolumeInfo? get _internal => _volumes.where((item) => !item.removable).cast<VolumeInfo?>().firstOrNull;
@@ -110,20 +116,16 @@ class _SyncPageState extends State<SyncPage> {
     });
   }
 
-  bool _savedReceive = false;
+  final _savedPaths = <String>{};
 
   Future<void> _saveReceive(IncomingRoom room) async {
-    if (_savedReceive) return;
-    _savedReceive = true;
-    await widget.history.add(
-      job: "sync",
-      mode: widget.settings.mode.name,
-      peer: "Outro aparelho",
-      files: [
-        for (final file in room.saved)
+    final fresh = [
+      for (final file in room.saved)
+        if (_savedPaths.add(file.sourcePath))
           HistoryFile(name: file.name, bytes: file.bytes, dest: file.dest, sourcePath: file.sourcePath),
-      ],
-    );
+    ];
+    if (fresh.isEmpty) return;
+    await widget.history.add(job: "sync", mode: widget.settings.mode.name, peer: "Outro aparelho", files: fresh);
   }
 
   Future<void> _scanPeers() async {
@@ -255,97 +257,203 @@ class _SyncPageState extends State<SyncPage> {
     if (token != null) await _loadLibrary(token);
   }
 
+  Future<int> _level() async {
+    final now = DateTime.now();
+    if (_myBattery >= 0 && _batteryAt != null && now.difference(_batteryAt!).inSeconds < 20) return _myBattery;
+    _myBattery = await Battery().batteryLevel.catchError((_) => _myBattery < 0 ? 100 : _myBattery);
+    _batteryAt = now;
+    return _myBattery;
+  }
+
   Future<void> _send() async {
     final peer = _peer;
     final token = _token;
     if (peer == null || token == null) return;
-    final level = await Battery().batteryLevel.catchError((_) => 100);
-    if (level <= 20 && mounted) {
-      final go = await showDialog<bool>(
+    final chosen = _files.where((file) => _selected.contains(file.path)).toList();
+    if (chosen.isEmpty) return;
+    final jobBytes = chosen.fold<int>(0, (sum, file) => sum + file.bytes);
+    var batches = [chosen];
+    const limit = 5 * gb;
+    if (jobBytes > limit && chosen.length > 1) {
+      final split = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text("Bateria baixa"),
-          content: Text("Está em $level%. Ligue o carregador se a transferência for longa."),
+          title: const Text("Dividir a transferência?"),
+          content: Text(
+            "São ${formatBytes(jobBytes)}. Posso enviar em partes de cerca de 5 GB. Quando uma acaba, você escolhe se continua.",
+          ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Voltar")),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text("Continuar")),
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Voltar")),
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Enviar tudo")),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text("Dividir em partes")),
           ],
         ),
       );
-      if (go != true) return;
+      if (!mounted || split == null) return;
+      if (split) batches = _splitFiles(chosen, limit);
     }
-    final chosen = _files.where((file) => _selected.contains(file.path)).toList();
-    final offers = [
-      for (var i = 0; i < chosen.length; i++) Offer(id: "$i", name: chosen[i].name, bytes: chosen[i].bytes),
-    ];
+    final level = await _level();
+    final outlook = chargeForecast(level: level, bytes: jobBytes);
+    if (!mounted) return;
+    final start = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Antes de começar"),
+        content: Text(
+          "Tempo estimado: ${formatEta(outlook.seconds)}, a cerca de 2 MB/s.\n\n"
+          "Neste aparelho a bateria está em ${outlook.now}%. Ao terminar deve ficar em torno de ${outlook.atEnd}%.\n\n"
+          "${outlook.needsCharger ? "Conecte o carregador neste aparelho." : "A bateria deste aparelho deve aguentar."}\n\n"
+          "O outro aparelho também mostra o tempo e a bateria dele antes de aceitar.",
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Voltar")),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text("Começar")),
+        ],
+      ),
+    );
+    if (start != true || !mounted) return;
     setState(() {
       _busy = true;
       _pauseHere = false;
       _pauseThere = false;
       _stop = false;
       _sent = 0;
-      _total = 0;
+      _total = jobBytes;
       _fileIndex = 0;
-      _fileCount = 0;
+      _fileCount = chosen.length;
+      _part = 1;
+      _parts = batches.length;
       _currentName = "";
+      _otherNow = null;
       _status = "O outro aparelho está escolhendo o destino.";
     });
     await DeviceBridge.hold();
     await WakelockPlus.enable();
     _poll?.cancel();
-    _poll = Timer.periodic(const Duration(seconds: 1), (_) async {
+    _poll = Timer.periodic(const Duration(seconds: 2), (_) async {
       if (_stop || _peer == null || _token == null) return;
       try {
-        final state = await Sender.pauseState(_peer!, _token!);
+        final state = await Sender.pulse(_peer!, _token!, await _level());
         if (!mounted) return;
-        setState(() => _pauseThere = state["here"] == true);
+        final remote = state["battery"];
+        setState(() {
+          _pauseThere = state["here"] == true;
+          if (remote is num && remote >= 0) _otherNow = remote.toInt();
+        });
       } catch (_) {}
     });
     try {
-      await Sender.manifest(peer, token, offers);
-      Map<String, dynamic> decision = {"ready": false};
-      for (var i = 0; i < 150; i++) {
+      var jobDone = 0;
+      var sentFiles = 0;
+      for (var part = 0; part < batches.length; part++) {
         if (_stop) throw StateError("interrompido");
-        await _waitIfPaused();
-        decision = await Sender.decision(peer, token);
-        if (decision["ready"] == true) break;
-        await Future.delayed(const Duration(seconds: 1));
-      }
-      if (decision["ready"] != true) throw StateError("o outro aparelho não confirmou");
-      final accepted = <String>{
-        for (final item in decision["placements"] as List<dynamic>)
-          if (item["dest"] != null) item["id"].toString(),
-      };
-      final todo = [
-        for (var i = 0; i < offers.length; i++)
-          if (accepted.contains(offers[i].id)) (offer: offers[i], file: chosen[i]),
-      ];
-      final total = todo.fold<int>(0, (sum, item) => sum + item.offer.bytes);
-      setState(() {
-        _total = total;
-        _fileCount = todo.length;
-        _status = "Enviando";
-      });
-      var done = 0;
-      final saved = <HistoryFile>[];
-      for (var i = 0; i < todo.length; i++) {
-        final item = todo[i];
-        if (_stop) throw StateError("interrompido");
+        final batch = batches[part];
+        final offers = [
+          for (var i = 0; i < batch.length; i++) Offer(id: "$i", name: batch[i].name, bytes: batch[i].bytes),
+        ];
         setState(() {
-          _currentName = item.offer.name;
-          _fileIndex = i + 1;
-          _status = item.offer.name;
+          _part = part + 1;
+          _parts = batches.length;
+          _status = batches.length > 1
+              ? "Parte ${part + 1} de ${batches.length}. O outro aparelho confirma."
+              : "O outro aparelho está escolhendo o destino.";
         });
-        await Sender.upload(peer, token, item.offer, await readableFile(item.file), (sent) {
-          if (mounted) setState(() => _sent = done + sent);
-        }, _waitIfPaused);
-        done += item.offer.bytes;
-        if (mounted) setState(() => _sent = done);
-        saved.add(HistoryFile(name: item.offer.name, bytes: item.offer.bytes, dest: "remoto", sourcePath: item.file.path));
+        await Sender.manifest(
+          peer,
+          token,
+          offers,
+          battery: await _level(),
+          part: part + 1,
+          parts: batches.length,
+          jobBytes: jobBytes,
+          jobDone: jobDone,
+        );
+        Map<String, dynamic> decision = {"ready": false};
+        for (var i = 0; i < 150; i++) {
+          if (_stop) throw StateError("interrompido");
+          await _waitIfPaused();
+          decision = await Sender.decision(peer, token);
+          if (decision["ready"] == true) break;
+          await Future.delayed(const Duration(seconds: 1));
+        }
+        if (decision["ready"] != true) throw StateError("o outro aparelho não confirmou");
+        final remote = (decision["battery"] as num?)?.toInt();
+        if (remote != null && remote >= 0 && part == 0 && mounted) {
+          final other = chargeForecast(level: remote, bytes: jobBytes);
+          setState(() => _otherNow = remote);
+          if (other.needsCharger) {
+            final cont = await showDialog<bool>(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text("Bateria do outro aparelho"),
+                content: Text(
+                  "Lá está em ${other.now}% e deve terminar perto de ${other.atEnd}%.\n\nConecte o carregador no aparelho que vai receber.",
+                ),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Parar")),
+                  FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text("Continuar mesmo assim")),
+                ],
+              ),
+            );
+            if (cont != true) {
+              await Sender.finish(peer, token);
+              if (mounted) setState(() => _status = "Parou. Ligue o carregador no outro aparelho e envie de novo.");
+              return;
+            }
+          }
+        }
+        final accepted = <String>{
+          for (final item in decision["placements"] as List<dynamic>)
+            if (item["dest"] != null) item["id"].toString(),
+        };
+        final todo = [
+          for (var i = 0; i < offers.length; i++)
+            if (accepted.contains(offers[i].id)) (offer: offers[i], file: batch[i]),
+        ];
+        setState(() => _status = "Enviando");
+        final saved = <HistoryFile>[];
+        for (final item in todo) {
+          if (_stop) throw StateError("interrompido");
+          sentFiles += 1;
+          final base = jobDone;
+          setState(() {
+            _currentName = item.offer.name;
+            _fileIndex = sentFiles;
+            _status = item.offer.name;
+          });
+          await Sender.upload(peer, token, item.offer, await readableFile(item.file), (sent) {
+            if (mounted) setState(() => _sent = base + sent);
+          }, _waitIfPaused);
+          jobDone += item.offer.bytes;
+          if (mounted) setState(() => _sent = jobDone);
+          saved.add(HistoryFile(name: item.offer.name, bytes: item.offer.bytes, dest: "remoto", sourcePath: item.file.path));
+        }
+        final hasNext = part + 1 < batches.length;
+        var more = false;
+        if (hasNext && mounted) {
+          final nextBytes = batches[part + 1].fold<int>(0, (sum, file) => sum + file.bytes);
+          final next = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: Text("Parte ${part + 1} de ${batches.length} concluída"),
+              content: Text("A próxima tem ${formatBytes(nextBytes)}. Continuar?"),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Parar")),
+                FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text("Próxima parte")),
+              ],
+            ),
+          );
+          more = next == true;
+        }
+        await Sender.finish(peer, token, more: more);
+        await widget.history.add(job: "sync", mode: widget.settings.mode.name, peer: peer.name, files: saved);
+        if (!more) {
+          if (mounted) {
+            setState(() => _status = hasNext ? "Parou entre as partes. O que já chegou ficou salvo." : "Enviado e verificado.");
+          }
+          return;
+        }
       }
-      await Sender.finish(peer, token);
-      await widget.history.add(job: "sync", mode: widget.settings.mode.name, peer: peer.name, files: saved);
-      if (mounted) setState(() => _status = "Enviado e verificado.");
     } catch (error) {
       if (mounted) setState(() => _status = _plainError(error));
     } finally {
@@ -447,6 +555,37 @@ class _SyncPageState extends State<SyncPage> {
 
   Widget _receiveBody(IncomingRoom room) {
     final link = room.ip == null ? "" : "sincro://${room.ip}:${room.port}";
+    final live = room.keepGoing || (room.decided && !room.finished);
+    if (live) {
+      final done = room.jobDone + room.receivedBytes;
+      final total = room.jobBytes > 0 ? room.jobBytes : room.totalBytes;
+      final heading = room.finished
+          ? (room.part < room.parts ? "Parte concluída" : "Concluído")
+          : room.paused
+              ? "Pausado"
+              : room.parts > 1
+                  ? "Recebendo · parte ${room.part} de ${room.parts}"
+                  : "Recebendo";
+      return ListView(
+        children: [
+          Text(room.current.isEmpty ? room.status : room.current, textAlign: TextAlign.center),
+          const SizedBox(height: 8),
+          TransferPanel(
+            heading: heading,
+            fileName: room.current,
+            done: done,
+            total: total,
+            paused: room.paused,
+            index: room.saved.length + (room.current.isEmpty || room.finished ? 0 : 1),
+            count: room.offers.isEmpty ? 1 : room.offers.length,
+            onTogglePause: room.finished ? () {} : () => room.setLocalPause(!room.pauseHere),
+          ),
+          const SizedBox(height: 12),
+          BatteryMeter(done: done, total: total, otherNow: room.peerBattery),
+        ],
+      );
+    }
+    final previewBytes = room.jobBytes > 0 ? room.jobBytes : room.plan.fold<int>(0, (sum, item) => sum + item.bytes);
     return ListView(
       children: [
         Text(room.status, style: const TextStyle(fontWeight: FontWeight.w800)),
@@ -462,31 +601,14 @@ class _SyncPageState extends State<SyncPage> {
         Text("Modo ${modeLabel(widget.settings.mode)}. ${modeHint(widget.settings.mode)}"),
         if (room.offers.isNotEmpty && !room.decided) ...[
           const SizedBox(height: 12),
-          Text("${room.plan.length} arquivos · ${formatBytes(room.plan.fold<int>(0, (sum, item) => sum + item.bytes))}"),
-          for (final item in room.plan.take(4))
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text("${formatBytes(item.bytes)} · ${placementLabel(item)}"),
-            ),
-          if (room.plan.length > 4) Text("e mais ${room.plan.length - 4} arquivos"),
+          Text("${room.plan.length} arquivos · ${formatBytes(previewBytes)}"),
+          if (room.parts > 1) Text("Parte ${room.part} de ${room.parts}"),
+          const SizedBox(height: 8),
+          BatteryMeter(done: 0, total: previewBytes, otherNow: room.peerBattery),
           const SizedBox(height: 8),
           FilledButton(
             onPressed: () => room.accept(_internal?.path ?? "/storage/emulated/0", _sd?.path),
             child: const Text("Receber o que cabe"),
-          ),
-        ],
-        if (room.decided && !room.finished) ...[
-          const SizedBox(height: 12),
-          TransferPanel(
-            heading: room.paused ? "Pausado" : "Recebendo",
-            fileName: room.current,
-            done: room.receivedBytes,
-            total: room.totalBytes,
-            paused: room.paused,
-            index: room.saved.length + (room.current.isEmpty ? 0 : 1),
-            count: room.plan.where((item) => item.dest != null).length,
-            onTogglePause: () => room.setLocalPause(!room.pauseHere),
           ),
         ],
       ],
@@ -546,52 +668,80 @@ class _SyncPageState extends State<SyncPage> {
         Text(_status),
         const SizedBox(height: 8),
         if (_loadingLibrary) const LinearProgressIndicator(),
-        if (_busy) ...[
-          TransferPanel(
-            heading: _total == 0
-                ? "Aguardando"
-                : _pauseThere && !_pauseHere
-                    ? "O outro aparelho pausou"
-                    : "Enviando",
-            fileName: _currentName.isEmpty ? "Toque em Receber o que cabe no outro aparelho" : _currentName,
-            done: _sent,
-            total: _total,
-            paused: _pauseHere || _pauseThere,
-            index: _fileIndex,
-            count: _fileCount,
-            onTogglePause: _togglePause,
+        if (_busy)
+          Expanded(
+            child: ListView(
+              children: [
+                if (_currentName.isNotEmpty) Text(_currentName, textAlign: TextAlign.center),
+                TransferPanel(
+                  heading: _sent == 0 && _currentName.isEmpty
+                      ? "Aguardando"
+                      : _pauseThere && !_pauseHere
+                          ? "O outro aparelho pausou"
+                          : _parts > 1
+                              ? "Enviando · parte $_part de $_parts"
+                              : "Enviando",
+                  fileName: _currentName.isEmpty ? "Toque em Receber o que cabe no outro aparelho" : _currentName,
+                  done: _sent,
+                  total: _total,
+                  paused: _pauseHere || _pauseThere,
+                  index: _fileIndex,
+                  count: _fileCount,
+                  onTogglePause: _togglePause,
+                ),
+                const SizedBox(height: 12),
+                BatteryMeter(done: _sent, total: _total, otherNow: _otherNow),
+              ],
+            ),
+          )
+        else ...[
+          if (_files.isEmpty && !_loadingLibrary)
+            FilledButton.icon(
+              onPressed: _allowGallery,
+              icon: const Icon(Icons.photo_library_outlined),
+              label: const Text("Permitir fotos e vídeos"),
+            ),
+          Expanded(
+            child: GroupedFileList(
+              files: _files,
+              selected: _selected,
+              enabled: true,
+              onChanged: (next) => setState(() {
+                _selected
+                  ..clear()
+                  ..addAll(next);
+                _followAll = _files.isNotEmpty && next.length >= _files.length;
+              }),
+            ),
           ),
-          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(child: OutlinedButton.icon(onPressed: _end, icon: const Icon(Icons.close), label: const Text("Encerrar"))),
+              const SizedBox(width: 8),
+              Expanded(child: FilledButton.icon(onPressed: _selected.isEmpty ? null : _send, icon: const Icon(Icons.send), label: const Text("Enviar"))),
+            ],
+          ),
         ],
-        if (_files.isEmpty && !_busy && !_loadingLibrary)
-          FilledButton.icon(
-            onPressed: _allowGallery,
-            icon: const Icon(Icons.photo_library_outlined),
-            label: const Text("Permitir fotos e vídeos"),
-          ),
-        Expanded(
-          child: GroupedFileList(
-            files: _files,
-            selected: _selected,
-            enabled: !_busy,
-            onChanged: (next) => setState(() {
-              _selected
-                ..clear()
-                ..addAll(next);
-              _followAll = _files.isNotEmpty && next.length >= _files.length;
-            }),
-          ),
-        ),
-        Row(
-          children: [
-            Expanded(child: OutlinedButton.icon(onPressed: _end, icon: const Icon(Icons.close), label: const Text("Encerrar"))),
-            const SizedBox(width: 8),
-            Expanded(child: FilledButton.icon(onPressed: _busy || _selected.isEmpty ? null : _send, icon: const Icon(Icons.send), label: const Text("Enviar"))),
-          ],
-        ),
       ],
     );
   }
+}
+
+List<List<LocalFile>> _splitFiles(List<LocalFile> files, int limit) {
+  final parts = <List<LocalFile>>[];
+  var current = <LocalFile>[];
+  var size = 0;
+  for (final file in files) {
+    if (current.isNotEmpty && size + file.bytes > limit) {
+      parts.add(current);
+      current = <LocalFile>[];
+      size = 0;
+    }
+    current.add(file);
+    size += file.bytes;
+  }
+  if (current.isNotEmpty) parts.add(current);
+  return parts;
 }
 
 String _plainError(Object error) {
