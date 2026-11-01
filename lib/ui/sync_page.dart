@@ -3,6 +3,7 @@ import "dart:io";
 
 import "package:battery_plus/battery_plus.dart";
 import "package:flutter/material.dart";
+import "package:mobile_scanner/mobile_scanner.dart";
 import "package:qr_flutter/qr_flutter.dart";
 import "package:wakelock_plus/wakelock_plus.dart";
 
@@ -110,12 +111,17 @@ class _SyncPageState extends State<SyncPage> {
 
   Future<void> _scanPeers() async {
     setState(() => _looking = true);
-    final peers = await Sender.listen();
-    if (mounted) {
-      setState(() {
-        _peers = peers;
-        _looking = false;
-      });
+    await DeviceBridge.multicast(true);
+    try {
+      final peers = await Sender.listen(duration: const Duration(seconds: 6));
+      if (mounted) {
+        setState(() {
+          _peers = peers;
+          _looking = false;
+        });
+      }
+    } finally {
+      await DeviceBridge.multicast(false);
     }
   }
 
@@ -123,19 +129,52 @@ class _SyncPageState extends State<SyncPage> {
     setState(() => _peer = peer);
   }
 
+  Future<void> _openCamera() async {
+    final raw = await Navigator.push<String>(context, MaterialPageRoute(builder: (_) => const _QrScanPage()));
+    if (!mounted || raw == null) return;
+    final peer = _peerFromQr(raw);
+    if (peer == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Esse QR não é do SincroLocal.")));
+      return;
+    }
+    setState(() {
+      _peer = peer;
+      _manual.text = "${peer.address}:${peer.port}";
+    });
+  }
+
+  FoundPeer? _peerFromQr(String raw) {
+    final uri = Uri.tryParse(raw.trim());
+    if (uri == null || uri.scheme != "sincro" || uri.host.isEmpty || uri.hasPort == false) return null;
+    return FoundPeer(name: "o outro aparelho", address: uri.host, port: uri.port);
+  }
+
   Future<void> _submitCode(String code) async {
     final peer = _peer;
-    if (peer == null) return;
+    if (peer == null || _busy) return;
+    setState(() {
+      _busy = true;
+      _status = "Conferindo o código...";
+    });
     try {
       final token = await Sender.pair(peer, code);
-      final files = await scanFiles(await DeviceBridge.volumes());
+      if (!mounted) return;
       setState(() {
         _token = token;
+        _status = "Pareado. Procurando arquivos neste aparelho...";
+      });
+      final files = await scanFiles(await DeviceBridge.volumes());
+      if (!mounted) return;
+      setState(() {
         _files = files;
-        _status = "Pareado com ${peer.name}. Escolha o que enviar.";
+        _busy = false;
+        _status = files.isEmpty
+            ? "Pareado, mas não achei fotos, vídeos ou documentos."
+            : "Pareado. Escolha o que enviar.";
       });
     } catch (error) {
       if (mounted) {
+        setState(() => _busy = false);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Não pareou: $error")));
       }
     }
@@ -284,8 +323,10 @@ class _SyncPageState extends State<SyncPage> {
     if (_token == null) {
       return ListView(
         children: [
-          const Text("Escolha o aparelho que está recebendo e toque no código que aparece na tela dele."),
+          const Text("Aponte a câmera para o QR do aparelho que está recebendo. Depois digite só o código de 3 letras."),
           const SizedBox(height: 12),
+          FilledButton(onPressed: _busy ? null : _openCamera, child: const Text("Abrir câmera e ler o QR")),
+          const SizedBox(height: 16),
           if (_looking) const LinearProgressIndicator(),
           for (final peer in _peers)
             ListTile(
@@ -303,7 +344,7 @@ class _SyncPageState extends State<SyncPage> {
               final parts = _manual.text.split(":");
               final port = parts.length == 2 ? int.tryParse(parts[1]) : null;
               if (port == null) return;
-              _choosePeer(FoundPeer(name: "Manual", address: parts[0], port: port));
+              _choosePeer(FoundPeer(name: "o outro aparelho", address: parts[0], port: port));
             },
             child: const Text("Usar este endereço"),
           ),
@@ -318,9 +359,10 @@ class _SyncPageState extends State<SyncPage> {
               decoration: const InputDecoration(labelText: "Código"),
             ),
             FilledButton(
-              onPressed: _code.text.trim().length < 3 ? null : () => _submitCode(_code.text.trim().toUpperCase()),
-              child: const Text("Parear"),
+              onPressed: _busy || _code.text.trim().length < 3 ? null : () => _submitCode(_code.text.trim().toUpperCase()),
+              child: Text(_busy ? "Conferindo..." : "Parear"),
             ),
+            if (_busy) const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),
           ],
         ],
       );
@@ -358,6 +400,31 @@ class _SyncPageState extends State<SyncPage> {
         ),
         FilledButton(onPressed: _busy || _selected.isEmpty ? null : _send, child: const Text("Enviar")),
       ],
+    );
+  }
+}
+
+class _QrScanPage extends StatefulWidget {
+  const _QrScanPage();
+
+  @override
+  State<_QrScanPage> createState() => _QrScanPageState();
+}
+
+class _QrScanPageState extends State<_QrScanPage> {
+  bool _done = false;
+
+  void _found(String? raw) {
+    if (_done || raw == null || !raw.startsWith("sincro://")) return;
+    _done = true;
+    Navigator.pop(context, raw);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Ler QR")),
+      body: MobileScanner(onDetect: (capture) => _found(capture.barcodes.firstOrNull?.rawValue)),
     );
   }
 }
