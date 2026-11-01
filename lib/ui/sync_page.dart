@@ -548,8 +548,12 @@ class _SyncPageState extends State<SyncPage> {
         if (_loadingLibrary) const LinearProgressIndicator(),
         if (_busy) ...[
           TransferPanel(
-            heading: _pauseThere && !_pauseHere ? "O outro aparelho pausou" : "Enviando",
-            fileName: _currentName,
+            heading: _total == 0
+                ? "Aguardando"
+                : _pauseThere && !_pauseHere
+                    ? "O outro aparelho pausou"
+                    : "Enviando",
+            fileName: _currentName.isEmpty ? "Toque em Receber o que cabe no outro aparelho" : _currentName,
             done: _sent,
             total: _total,
             paused: _pauseHere || _pauseThere,
@@ -592,6 +596,9 @@ class _SyncPageState extends State<SyncPage> {
 
 String _plainError(Object error) {
   final text = error.toString();
+  if (text.contains("Content size below") || text.contains("contentLength")) {
+    return "O arquivo saiu pela metade e a transferência parou. Envie de novo com este aplicativo atualizado.";
+  }
   if (text.contains("Connection refused") || text.contains("errno = 111")) {
     return "O outro aparelho fechou a recepção. Deixe ele na tela Receber, na mesma rede Wi-Fi, e toque em Enviar de novo.";
   }

@@ -30,6 +30,8 @@ class TransferPanel extends StatefulWidget {
 
 class _TransferPanelState extends State<TransferPanel> with SingleTickerProviderStateMixin {
   late final AnimationController _move;
+  DateTime? _started;
+  int _mark = 0;
 
   @override
   void initState() {
@@ -48,7 +50,8 @@ class _TransferPanelState extends State<TransferPanel> with SingleTickerProvider
     final scheme = Theme.of(context).colorScheme;
     final percent = widget.total <= 0 ? 0.0 : (widget.done / widget.total).clamp(0.0, 1.0);
     final percentLabel = widget.total <= 0 ? "..." : "${(percent * 100).toStringAsFixed(percent < 0.1 && percent > 0 ? 1 : 0)}%";
-    final where = widget.count > 0 ? "Arquivo ${widget.index} de ${widget.count}" : widget.heading;
+    final where = widget.count > 0 ? "Arquivo ${widget.index} de ${widget.count}" : "";
+    final eta = _remaining();
     return Material(
       color: scheme.surfaceContainerHigh,
       borderRadius: BorderRadius.circular(22),
@@ -91,13 +94,14 @@ class _TransferPanelState extends State<TransferPanel> with SingleTickerProvider
               ),
             ),
             Text(widget.paused ? "Transferência pausada" : widget.heading, style: const TextStyle(fontWeight: FontWeight.w800)),
-            Text(where, style: TextStyle(color: scheme.onSurfaceVariant)),
+            if (where.isNotEmpty) Text(where, style: TextStyle(color: scheme.onSurfaceVariant)),
             const SizedBox(height: 4),
             Text(widget.fileName.isEmpty ? "Preparando..." : widget.fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
             Text(percentLabel, style: TextStyle(fontSize: 40, fontWeight: FontWeight.w800, color: scheme.primary)),
             LinearProgressIndicator(value: widget.total <= 0 ? null : percent),
             const SizedBox(height: 6),
             Text("${formatBytes(widget.done)} de ${formatBytes(widget.total)}"),
+            Text(eta, style: TextStyle(color: scheme.onSurfaceVariant)),
             const SizedBox(height: 10),
             OutlinedButton.icon(
               onPressed: widget.onTogglePause,
@@ -108,5 +112,22 @@ class _TransferPanelState extends State<TransferPanel> with SingleTickerProvider
         ),
       ),
     );
+  }
+
+  String _remaining() {
+    if (widget.paused) return "Pausado. O tempo segue quando continuar.";
+    if (widget.total <= 0 || widget.done <= 0) return "Calculando o tempo restante...";
+    final now = DateTime.now();
+    if (_started == null || widget.done < _mark) {
+      _started = now;
+      _mark = widget.done;
+      return "Calculando o tempo restante...";
+    }
+    final seconds = now.difference(_started!).inMilliseconds / 1000;
+    final gained = widget.done - _mark;
+    if (seconds < 1 || gained <= 0) return "Calculando o tempo restante...";
+    final speed = gained / seconds;
+    final left = (widget.total - widget.done) / speed;
+    return "${formatBytes(speed.round())}/s · falta ${formatEta(left)}";
   }
 }

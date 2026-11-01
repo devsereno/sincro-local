@@ -299,7 +299,7 @@ class Sender {
       final request = await client.putUrl(Uri.parse("http://${peer.address}:${peer.port}/v1/file/${offer.id}"));
       request.headers.set("authorization", "Bearer $token");
       var sent = 0;
-      final stream = file.openRead(256 * 1024).asyncMap((data) async {
+      final stream = file.openRead().asyncMap((data) async {
         await gate();
         sent += data.length;
         onProgress(sent);

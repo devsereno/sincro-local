@@ -29,7 +29,7 @@ Future<String> copyHashed({
   final out = dest.openWrite();
   var written = 0;
   try {
-    await for (final chunk in source.openRead(64 * 1024)) {
+    await for (final chunk in source.openRead()) {
       if (cancel.cancelled) break;
       input.add(chunk);
       out.add(chunk);
