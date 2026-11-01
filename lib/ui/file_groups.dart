@@ -3,7 +3,7 @@ import "package:flutter/material.dart";
 import "../planner.dart";
 import "../scanner.dart";
 
-const categoryOrder = ["Fotos", "Vídeos", "Documentos", "Arquivos", "Áudio", "Downloads", "Outros"];
+const categoryOrder = ["Fotos", "Vídeos", "Documentos", "Arquivos", "Áudio", "Aplicativos", "Downloads", "Outros"];
 
 IconData iconForCategory(String category) {
   switch (category) {
@@ -17,6 +17,8 @@ IconData iconForCategory(String category) {
       return Icons.folder_zip_outlined;
     case "Áudio":
       return Icons.audiotrack_outlined;
+    case "Aplicativos":
+      return Icons.android_outlined;
     case "Downloads":
       return Icons.download_outlined;
     default:

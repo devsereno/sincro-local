@@ -13,6 +13,7 @@ import "../resume_store.dart";
 import "../scanner.dart";
 import "../settings_store.dart";
 import "../sync.dart";
+import "../transfer.dart";
 import "file_groups.dart";
 import "battery_meter.dart";
 import "transfer_panel.dart";
@@ -27,7 +28,7 @@ class SyncPage extends StatefulWidget {
   State<SyncPage> createState() => _SyncPageState();
 }
 
-class _SyncPageState extends State<SyncPage> {
+class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
   String? _role;
   IncomingRoom? _room;
   List<VolumeInfo> _volumes = [];
@@ -71,6 +72,15 @@ class _SyncPageState extends State<SyncPage> {
     return cards.firstOrNull;
   }
 
+  bool _needAllFiles = false;
+  bool _loadingOthers = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
   @override
   void dispose() {
     _stop = true;
@@ -81,7 +91,16 @@ class _SyncPageState extends State<SyncPage> {
     DeviceBridge.release();
     _manual.dispose();
     _code.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final token = _token;
+    if (state == AppLifecycleState.resumed && _needAllFiles && token != null && !_loadingOthers) {
+      _loadOtherFiles(token);
+    }
   }
 
   Future<void> _receive() async {
@@ -125,6 +144,22 @@ class _SyncPageState extends State<SyncPage> {
       _role = "receive";
       _room = room;
     });
+    _indexRoom(room);
+  }
+
+  Future<void> _indexRoom(IncomingRoom room) async {
+    room.noteIndexed(0, "Lendo a memória interna e o cartão...");
+    var seen = 0;
+    final total = await indexStorage(_volumes, (name, bytes) {
+      room.knownKeys.add("$name|$bytes");
+      room.knownKeys.add("${safeName(name)}|$bytes");
+      seen++;
+      if (seen % 400 == 0) {
+        room.noteIndexed(seen, "Conferindo interna e cartão: $seen arquivos");
+      }
+    });
+    if (!mounted) return;
+    room.noteIndexed(total, "Conferidos $total arquivos na interna e no cartão. O que já existir não será enviado de novo.");
   }
 
   final _savedPaths = <String>{};
@@ -228,7 +263,7 @@ class _SyncPageState extends State<SyncPage> {
       });
       return;
     }
-    for (final kind in ["images", "videos", "files"]) {
+    for (final kind in ["images", "videos", "audio"]) {
       var offset = 0;
       while (mounted && _token == token && !_stop) {
         final page = await loadGalleryChunk(kind, offset);
@@ -248,17 +283,67 @@ class _SyncPageState extends State<SyncPage> {
       }
     }
     if (!mounted || _token != token) return;
-    final extras = await scanDocuments(await DeviceBridge.volumes());
-    if (!mounted || _token != token) return;
-    final known = _files.map((file) => file.path).toSet();
-    final fresh = extras.where((file) => known.add(file.path));
+    await _loadOtherFiles(token);
+  }
+
+  Future<void> _loadOtherFiles(String token) async {
+    if (_loadingOthers || _token != token) return;
+    _loadingOthers = true;
+    final allowed = await DeviceBridge.hasAllFilesAccess();
+    if (!mounted || _token != token) {
+      _loadingOthers = false;
+      return;
+    }
+    if (!allowed) {
+      setState(() {
+        _needAllFiles = true;
+        _loadingLibrary = false;
+        _loadingOthers = false;
+        _status = "${_libraryStatus()} Para zip, PDF, Word e planilhas, permita o acesso a todos os arquivos.";
+      });
+      return;
+    }
     setState(() {
-      for (final file in fresh) {
+      _needAllFiles = false;
+      _status = "Lendo zip, PDF, Word, planilhas e áudio...";
+    });
+    for (final kind in ["files"]) {
+      var offset = 0;
+      while (mounted && _token == token && !_stop) {
+        final page = await loadGalleryChunk(kind, offset);
+        if (!mounted || _token != token) break;
+        setState(() {
+          final seen = _files.map((file) => file.path).toSet();
+          for (final file in page.files) {
+            if (!seen.add(file.path.isEmpty ? file.name : file.path)) continue;
+            _files.add(file);
+            if (_followAll) _selected.add(file.path);
+          }
+        });
+        if (page.done || page.next <= offset) break;
+        offset = page.next;
+      }
+    }
+    if (!mounted || _token != token) {
+      _loadingOthers = false;
+      return;
+    }
+    final extras = await scanDocuments(await DeviceBridge.volumes());
+    if (!mounted || _token != token) {
+      _loadingOthers = false;
+      return;
+    }
+    final known = _files.map((file) => file.path).toSet();
+    setState(() {
+      for (final file in extras) {
+        if (!known.add(file.path)) continue;
         _files.add(file);
         if (_followAll) _selected.add(file.path);
       }
       _loadingLibrary = false;
-      if (!_busy) _status = _files.isEmpty ? "Não achei arquivos. Se o Android perguntou, escolha Permitir tudo." : _libraryStatus();
+      _loadingOthers = false;
+      _needAllFiles = false;
+      if (!_busy) _status = _libraryStatus();
     });
     if (_files.isNotEmpty) await ResumeStore.saveLibrary(_files);
   }
@@ -734,6 +819,10 @@ class _SyncPageState extends State<SyncPage> {
         ],
         const SizedBox(height: 12),
         Text("Modo ${modeLabel(widget.settings.mode)}. ${modeHint(widget.settings.mode)}"),
+        if (room.indexLabel.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(room.indexLabel),
+        ],
         if (room.offers.isNotEmpty && !room.decided) ...[
           const SizedBox(height: 12),
           Text("${room.plan.length} arquivos · ${formatBytes(previewBytes)}"),
@@ -839,6 +928,15 @@ class _SyncPageState extends State<SyncPage> {
             ),
           )
         else ...[
+          if (_needAllFiles && !_busy)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: FilledButton.icon(
+                onPressed: () => DeviceBridge.requestAllFilesAccess(),
+                icon: const Icon(Icons.folder_zip_outlined),
+                label: const Text("Permitir zip, PDF, Word e planilhas"),
+              ),
+            ),
           if (_files.isEmpty && !_loadingLibrary)
             FilledButton.icon(
               onPressed: _allowGallery,

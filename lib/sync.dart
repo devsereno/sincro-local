@@ -83,7 +83,16 @@ class IncomingRoom extends ChangeNotifier {
   int part = 1;
   int parts = 1;
   bool get paused => pauseHere || pauseThere;
+  final knownKeys = <String>{};
+  int indexed = 0;
+  String indexLabel = "";
   final List<({String name, int bytes, String dest, String sourcePath})> saved = [];
+
+  void noteIndexed(int count, String label) {
+    indexed = count;
+    indexLabel = label;
+    notifyListeners();
+  }
   final CancelFlag cancel = CancelFlag();
 
   Future<void> start(List<Placement> Function(List<Offer> offers) buildPlan, {required String internalPath, String? sdPath}) async {
@@ -319,6 +328,7 @@ class IncomingRoom extends ChangeNotifier {
 
   Future<bool> _hasComplete(String name, int bytes) async {
     final clean = safeName(name);
+    if (knownKeys.contains("$clean|$bytes") || knownKeys.contains("$name|$bytes")) return true;
     for (final root in [_internalPath, _sdPath]) {
       if (root == null || root.isEmpty) continue;
       final file = File("$root/SincroLocal/$clean");

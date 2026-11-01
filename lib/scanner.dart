@@ -72,10 +72,12 @@ String categoryFor(String path) {
       lower.endsWith(".rtf")) {
     return "Documentos";
   }
+  if (lower.endsWith(".apk") || lower.endsWith(".apks") || lower.endsWith(".xapk")) {
+    return "Aplicativos";
+  }
   if (lower.endsWith(".zip") ||
       lower.endsWith(".rar") ||
       lower.endsWith(".7z") ||
-      lower.endsWith(".apk") ||
       lower.endsWith(".tar") ||
       lower.endsWith(".gz")) {
     return "Arquivos";
@@ -163,26 +165,51 @@ Future<List<LocalFile>> scanDocuments(List<VolumeInfo> volumes) async {
   final found = <LocalFile>[];
   final seen = <String>{};
   for (final volume in volumes) {
-    for (final folder in _folders) {
-      final root = Directory("${volume.path}/$folder");
-      if (!await root.exists()) continue;
-      try {
-        await for (final entity in root.list(recursive: true, followLinks: false)) {
-          if (found.length >= 8000) return found;
-          if (entity is! File) continue;
-          final path = entity.path;
-          if (path.contains("/.") || path.contains("/Android/")) continue;
-          if (!seen.add(path)) continue;
-          final category = categoryFor(path);
-          if (category == "Fotos" || category == "Vídeos") continue;
-          final stat = await entity.stat();
-          if (stat.size <= 0) continue;
-          found.add(LocalFile(path: path, name: path.split("/").last, bytes: stat.size, category: category));
-        }
-      } catch (_) {}
-    }
+    final root = Directory(volume.path);
+    if (!await root.exists()) continue;
+    try {
+      await for (final entity in root.list(recursive: true, followLinks: false)) {
+        if (found.length >= 20000) return found;
+        if (entity is! File) continue;
+        final path = entity.path;
+        if (_skipPath(path) || !seen.add(path)) continue;
+        final category = categoryFor(path);
+        if (category == "Fotos" || category == "Vídeos") continue;
+        final stat = await entity.stat();
+        if (stat.size <= 0) continue;
+        found.add(LocalFile(path: path, name: path.split("/").last, bytes: stat.size, category: category));
+        if (found.length % 200 == 0) await Future<void>.delayed(Duration.zero);
+      }
+    } catch (_) {}
   }
   return found;
+}
+
+Future<int> indexStorage(List<VolumeInfo> volumes, void Function(String name, int bytes) onFile) async {
+  final seen = <String>{};
+  var count = 0;
+  for (final volume in volumes) {
+    final root = Directory(volume.path);
+    if (!await root.exists()) continue;
+    try {
+      await for (final entity in root.list(recursive: true, followLinks: false)) {
+        if (count >= 80000) return count;
+        if (entity is! File) continue;
+        final path = entity.path;
+        if (_skipPath(path) || !seen.add(path)) continue;
+        final size = await entity.length().catchError((_) => 0);
+        if (size <= 0) continue;
+        count++;
+        onFile(path.split("/").last, size);
+        if (count % 250 == 0) await Future<void>.delayed(Duration.zero);
+      }
+    } catch (_) {}
+  }
+  return count;
+}
+
+bool _skipPath(String path) {
+  return path.contains("/.") || path.contains("/Android/data") || path.contains("/Android/obb");
 }
 
 Future<File> readableFile(LocalFile file) async {

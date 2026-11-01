@@ -109,10 +109,15 @@ class MainActivity : FlutterActivity() {
             arrayOf(
                 Manifest.permission.READ_MEDIA_IMAGES,
                 Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_AUDIO,
                 Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
             )
         } else if (Build.VERSION.SDK_INT >= 33) {
-            arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+            arrayOf(
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_AUDIO,
+            )
         } else {
             arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
@@ -160,7 +165,8 @@ class MainActivity : FlutterActivity() {
         val lower = name.lowercase()
         return when {
             listOf(".pdf", ".doc", ".docx", ".txt", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf").any { lower.endsWith(it) } -> "Documentos"
-            listOf(".zip", ".rar", ".7z", ".apk", ".tar", ".gz").any { lower.endsWith(it) } -> "Arquivos"
+            listOf(".zip", ".rar", ".7z", ".tar", ".gz").any { lower.endsWith(it) } -> "Arquivos"
+            listOf(".apk", ".apks", ".xapk").any { lower.endsWith(it) } -> "Aplicativos"
             listOf(".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac").any { lower.endsWith(it) } -> "Áudio"
             else -> "Downloads"
         }
@@ -169,17 +175,21 @@ class MainActivity : FlutterActivity() {
     private fun queryPage(kind: String, limit: Int, offset: Int): Map<String, Any> {
         val uri = when (kind) {
             "videos" -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-            "files" -> if (Build.VERSION.SDK_INT >= 29) {
-                MediaStore.Downloads.EXTERNAL_CONTENT_URI
-            } else {
-                MediaStore.Files.getContentUri("external")
-            }
+            "audio" -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+            "files" -> MediaStore.Files.getContentUri("external")
             else -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         }
         val fixedCategory = when (kind) {
             "videos" -> "Vídeos"
+            "audio" -> "Áudio"
             "files" -> null
             else -> "Fotos"
+        }
+        val selection = if (kind == "files") {
+            "${MediaStore.Files.FileColumns.MEDIA_TYPE}!=${MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE} AND " +
+                "${MediaStore.Files.FileColumns.MEDIA_TYPE}!=${MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO}"
+        } else {
+            null
         }
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
@@ -195,6 +205,7 @@ class MainActivity : FlutterActivity() {
                 android.content.ContentResolver.QUERY_ARG_SORT_DIRECTION,
                 android.content.ContentResolver.QUERY_SORT_DIRECTION_DESCENDING,
             )
+            if (selection != null) putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
         }
         val cursor = try {
             if (Build.VERSION.SDK_INT >= 26) {
@@ -203,7 +214,7 @@ class MainActivity : FlutterActivity() {
                 contentResolver.query(
                     uri,
                     projection,
-                    null,
+                    selection,
                     null,
                     "${MediaStore.MediaColumns.DATE_ADDED} DESC LIMIT $limit OFFSET $offset",
                 )
