@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "br.sincrolocal.sincrolocal"
+    namespace = "br.sincrolocal.sincro_local"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -14,7 +14,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "br.sincrolocal.sincrolocal"
+        applicationId = "br.sincrolocal.sincro_local"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
