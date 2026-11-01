@@ -13,6 +13,7 @@ import "../scanner.dart";
 import "../settings_store.dart";
 import "../sync.dart";
 import "file_groups.dart";
+import "transfer_panel.dart";
 
 class SyncPage extends StatefulWidget {
   const SyncPage({super.key, required this.settings, required this.history});
@@ -40,6 +41,15 @@ class _SyncPageState extends State<SyncPage> {
   int _sent = 0;
   int _total = 0;
   bool _busy = false;
+  bool _pauseHere = false;
+  bool _pauseThere = false;
+  bool _stop = false;
+  bool _loadingLibrary = false;
+  bool _followAll = false;
+  String _currentName = "";
+  int _fileIndex = 0;
+  int _fileCount = 0;
+  Timer? _poll;
 
   VolumeInfo? get _internal => _volumes.where((item) => !item.removable).cast<VolumeInfo?>().firstOrNull;
 
@@ -51,7 +61,12 @@ class _SyncPageState extends State<SyncPage> {
 
   @override
   void dispose() {
+    _stop = true;
+    _poll?.cancel();
+    _room?.cancel.cancelled = true;
     _room?.close();
+    WakelockPlus.disable();
+    DeviceBridge.release();
     _manual.dispose();
     _code.dispose();
     super.dispose();
@@ -87,6 +102,8 @@ class _SyncPageState extends State<SyncPage> {
       if (mounted) setState(() {});
       if (room.finished) _saveReceive(room);
     });
+    await DeviceBridge.hold();
+    await WakelockPlus.enable();
     setState(() {
       _role = "receive";
       _room = room;
@@ -171,31 +188,59 @@ class _SyncPageState extends State<SyncPage> {
   Future<void> _loadLibrary(String token) async {
     setState(() {
       _token = token;
-      _busy = true;
-      _status = "Pedindo permissão para ler fotos e vídeos...";
+      _busy = false;
+      _loadingLibrary = true;
+      _files = [];
+      _status = "Buscando os primeiros arquivos...";
     });
     var access = await DeviceBridge.mediaAccess();
     if (access != "all") access = await DeviceBridge.requestMediaAccess() ? await DeviceBridge.mediaAccess() : access;
-    if (!mounted) return;
+    if (!mounted || _token != token) return;
     if (access == "none") {
       setState(() {
-        _busy = false;
+        _loadingLibrary = false;
         _files = [];
         _status = "Sem permissão para a galeria. Toque em Permitir fotos e vídeos e escolha Permitir tudo.";
       });
       return;
     }
-    setState(() => _status = "Lendo a galeria deste aparelho...");
-    final files = await scanFiles(await DeviceBridge.volumes());
-    if (!mounted) return;
-    final photos = files.where((file) => file.category == "Fotos").length;
-    final videos = files.where((file) => file.category == "Vídeos").length;
+    for (final kind in ["images", "videos"]) {
+      var offset = 0;
+      while (mounted && _token == token && !_stop) {
+        final page = await loadGalleryChunk(kind, offset);
+        if (!mounted || _token != token) return;
+        setState(() {
+          for (final file in page.files) {
+            _files.add(file);
+            if (_followAll) _selected.add(file.path);
+          }
+          if (_busy) return;
+          final photos = _files.where((file) => file.category == "Fotos").length;
+          final videos = _files.where((file) => file.category == "Vídeos").length;
+          _status = "Carregando... $photos fotos e $videos vídeos. Já dá para escolher.";
+        });
+        if (page.done || page.next <= offset) break;
+        offset = page.next;
+      }
+    }
+    if (!mounted || _token != token) return;
+    final extras = await scanDocuments(await DeviceBridge.volumes());
+    if (!mounted || _token != token) return;
+    final known = _files.map((file) => file.path).toSet();
+    final fresh = extras.where((file) => file.category != "Fotos" && file.category != "Vídeos" && known.add(file.path));
+    final photos = _files.where((file) => file.category == "Fotos").length + fresh.where((file) => file.category == "Fotos").length;
+    final videos = _files.where((file) => file.category == "Vídeos").length;
     setState(() {
-      _files = files;
-      _busy = false;
-      _status = files.isEmpty
-          ? "Não achei fotos nem vídeos. Se o Android perguntou, escolha Permitir tudo."
-          : "Pareado. $photos fotos e $videos vídeos.";
+      for (final file in fresh) {
+        _files.add(file);
+        if (_followAll) _selected.add(file.path);
+      }
+      _loadingLibrary = false;
+      if (!_busy) {
+        _status = _files.isEmpty
+            ? "Não achei fotos nem vídeos. Se o Android perguntou, escolha Permitir tudo."
+            : "Galeria completa. $photos fotos e $videos vídeos.";
+      }
     });
   }
 
@@ -235,14 +280,33 @@ class _SyncPageState extends State<SyncPage> {
     ];
     setState(() {
       _busy = true;
+      _pauseHere = false;
+      _pauseThere = false;
+      _stop = false;
+      _sent = 0;
+      _total = 0;
+      _fileIndex = 0;
+      _fileCount = 0;
+      _currentName = "";
       _status = "O outro aparelho está escolhendo o destino.";
     });
     await DeviceBridge.hold();
     await WakelockPlus.enable();
+    _poll?.cancel();
+    _poll = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (_stop || _peer == null || _token == null) return;
+      try {
+        final state = await Sender.pauseState(_peer!, _token!);
+        if (!mounted) return;
+        setState(() => _pauseThere = state["here"] == true);
+      } catch (_) {}
+    });
     try {
       await Sender.manifest(peer, token, offers);
       Map<String, dynamic> decision = {"ready": false};
       for (var i = 0; i < 150; i++) {
+        if (_stop) throw StateError("interrompido");
+        await _waitIfPaused();
         decision = await Sender.decision(peer, token);
         if (decision["ready"] == true) break;
         await Future.delayed(const Duration(seconds: 1));
@@ -257,30 +321,80 @@ class _SyncPageState extends State<SyncPage> {
           if (accepted.contains(offers[i].id)) (offer: offers[i], file: chosen[i]),
       ];
       final total = todo.fold<int>(0, (sum, item) => sum + item.offer.bytes);
-      setState(() => _total = total);
+      setState(() {
+        _total = total;
+        _fileCount = todo.length;
+        _status = "Enviando";
+      });
       var done = 0;
       final saved = <HistoryFile>[];
-      for (final item in todo) {
-        setState(() => _status = item.offer.name);
+      for (var i = 0; i < todo.length; i++) {
+        final item = todo[i];
+        if (_stop) throw StateError("interrompido");
+        setState(() {
+          _currentName = item.offer.name;
+          _fileIndex = i + 1;
+          _status = item.offer.name;
+        });
         await Sender.upload(peer, token, item.offer, await readableFile(item.file), (sent) {
           if (mounted) setState(() => _sent = done + sent);
-        });
+        }, _waitIfPaused);
         done += item.offer.bytes;
+        if (mounted) setState(() => _sent = done);
         saved.add(HistoryFile(name: item.offer.name, bytes: item.offer.bytes, dest: "remoto", sourcePath: item.file.path));
       }
       await Sender.finish(peer, token);
       await widget.history.add(job: "sync", mode: widget.settings.mode.name, peer: peer.name, files: saved);
       if (mounted) setState(() => _status = "Enviado e verificado.");
     } catch (error) {
-      if (mounted) setState(() => _status = "Parou: $error");
+      if (mounted) setState(() => _status = _plainError(error));
     } finally {
+      _poll?.cancel();
       await WakelockPlus.disable();
       await DeviceBridge.release();
       if (mounted) setState(() => _busy = false);
     }
   }
 
+  Future<void> _waitIfPaused() async {
+    while ((_pauseHere || _pauseThere) && !_stop) {
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+    if (_stop) throw StateError("interrompido");
+  }
+
+  Future<void> _togglePause() async {
+    final next = !_pauseHere;
+    setState(() => _pauseHere = next);
+    final peer = _peer;
+    final token = _token;
+    if (peer == null || token == null) return;
+    try {
+      await Sender.setPause(peer, token, next);
+    } catch (_) {}
+  }
+
   Future<void> _end() async {
+    final room = _room;
+    final transferring = _busy || (room != null && room.decided && !room.finished);
+    if (transferring && mounted) {
+      final leave = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text("Encerrar sincronização?"),
+          content: const Text(
+            "Isso vai pausar e interromper a transferência dos arquivos entre os dois aparelhos. O que já chegou fica salvo.",
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Continuar")),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text("Encerrar")),
+          ],
+        ),
+      );
+      if (leave != true) return;
+    }
+    _stop = true;
+    _room?.cancel.cancelled = true;
     await _room?.close();
     if (mounted) Navigator.pop(context);
   }
@@ -348,22 +462,32 @@ class _SyncPageState extends State<SyncPage> {
         Text("Modo ${modeLabel(widget.settings.mode)}. ${modeHint(widget.settings.mode)}"),
         if (room.offers.isNotEmpty && !room.decided) ...[
           const SizedBox(height: 12),
-          for (final item in room.plan)
+          Text("${room.plan.length} arquivos · ${formatBytes(room.plan.fold<int>(0, (sum, item) => sum + item.bytes))}"),
+          for (final item in room.plan.take(4))
             ListTile(
               contentPadding: EdgeInsets.zero,
-              title: Text(item.name),
+              title: Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
               subtitle: Text("${formatBytes(item.bytes)} · ${placementLabel(item)}"),
             ),
+          if (room.plan.length > 4) Text("e mais ${room.plan.length - 4} arquivos"),
+          const SizedBox(height: 8),
           FilledButton(
             onPressed: () => room.accept(_internal?.path ?? "/storage/emulated/0", _sd?.path),
             child: const Text("Receber o que cabe"),
           ),
         ],
-        if (room.decided) ...[
+        if (room.decided && !room.finished) ...[
           const SizedBox(height: 12),
-          LinearProgressIndicator(value: room.totalBytes == 0 ? null : room.receivedBytes / room.totalBytes),
-          Text("${formatBytes(room.receivedBytes)} de ${formatBytes(room.totalBytes)}"),
-          Text(room.current),
+          TransferPanel(
+            heading: room.paused ? "Pausado" : "Recebendo",
+            fileName: room.current,
+            done: room.receivedBytes,
+            total: room.totalBytes,
+            paused: room.paused,
+            index: room.saved.length + (room.current.isEmpty ? 0 : 1),
+            count: room.plan.where((item) => item.dest != null).length,
+            onTogglePause: () => room.setLocalPause(!room.pauseHere),
+          ),
         ],
       ],
     );
@@ -421,12 +545,21 @@ class _SyncPageState extends State<SyncPage> {
       children: [
         Text(_status),
         const SizedBox(height: 8),
-        if (_busy && _files.isEmpty) const LinearProgressIndicator(),
-        if (_busy && _total > 0) ...[
-          LinearProgressIndicator(value: _sent / _total),
-          Text("${formatBytes(_sent)} de ${formatBytes(_total)}"),
+        if (_loadingLibrary) const LinearProgressIndicator(),
+        if (_busy) ...[
+          TransferPanel(
+            heading: _pauseThere && !_pauseHere ? "O outro aparelho pausou" : "Enviando",
+            fileName: _currentName,
+            done: _sent,
+            total: _total,
+            paused: _pauseHere || _pauseThere,
+            index: _fileIndex,
+            count: _fileCount,
+            onTogglePause: _togglePause,
+          ),
+          const SizedBox(height: 8),
         ],
-        if (_files.isEmpty && !_busy)
+        if (_files.isEmpty && !_busy && !_loadingLibrary)
           FilledButton.icon(
             onPressed: _allowGallery,
             icon: const Icon(Icons.photo_library_outlined),
@@ -441,12 +574,13 @@ class _SyncPageState extends State<SyncPage> {
               _selected
                 ..clear()
                 ..addAll(next);
+              _followAll = _files.isNotEmpty && next.length >= _files.length;
             }),
           ),
         ),
         Row(
           children: [
-            Expanded(child: OutlinedButton.icon(onPressed: _busy ? null : _end, icon: const Icon(Icons.close), label: const Text("Encerrar"))),
+            Expanded(child: OutlinedButton.icon(onPressed: _end, icon: const Icon(Icons.close), label: const Text("Encerrar"))),
             const SizedBox(width: 8),
             Expanded(child: FilledButton.icon(onPressed: _busy || _selected.isEmpty ? null : _send, icon: const Icon(Icons.send), label: const Text("Enviar"))),
           ],
@@ -454,6 +588,16 @@ class _SyncPageState extends State<SyncPage> {
       ],
     );
   }
+}
+
+String _plainError(Object error) {
+  final text = error.toString();
+  if (text.contains("Connection refused") || text.contains("errno = 111")) {
+    return "O outro aparelho fechou a recepção. Deixe ele na tela Receber, na mesma rede Wi-Fi, e toque em Enviar de novo.";
+  }
+  if (text.contains("interrompido")) return "Transferência interrompida.";
+  if (text.contains("não confirmou")) return "No outro aparelho, toque em Receber o que cabe.";
+  return "Parou: $text";
 }
 
 class _QrScanPage extends StatefulWidget {

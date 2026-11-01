@@ -5,6 +5,7 @@ import "package:crypto/crypto.dart";
 
 class CancelFlag {
   bool cancelled = false;
+  bool paused = false;
 }
 
 class DigestSink implements Sink<Digest> {
@@ -65,6 +66,9 @@ Future<String> writeHashed({
   var written = 0;
   try {
     await for (final chunk in source) {
+      while (cancel.paused && !cancel.cancelled) {
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
       if (cancel.cancelled) break;
       final bytes = chunk is Uint8List ? chunk : Uint8List.fromList(chunk);
       input.add(bytes);

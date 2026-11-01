@@ -70,6 +70,9 @@ class IncomingRoom extends ChangeNotifier {
   int totalBytes = 0;
   String current = "";
   bool finished = false;
+  bool pauseHere = false;
+  bool pauseThere = false;
+  bool get paused => pauseHere || pauseThere;
   final List<({String name, int bytes, String dest, String sourcePath})> saved = [];
   final CancelFlag cancel = CancelFlag();
 
@@ -101,6 +104,20 @@ class IncomingRoom extends ChangeNotifier {
     _sdPath = sdPath;
     totalBytes = plan.where((item) => item.dest != null).fold(0, (sum, item) => sum + item.bytes);
     status = "Recebendo arquivos";
+    notifyListeners();
+  }
+
+  void setLocalPause(bool value) {
+    pauseHere = value;
+    cancel.paused = paused;
+    if (decided && !finished) status = paused ? "Transferência pausada" : "Recebendo arquivos";
+    notifyListeners();
+  }
+
+  void _applyRemotePause(bool value) {
+    pauseThere = value;
+    cancel.paused = paused;
+    if (decided && !finished) status = paused ? "Transferência pausada" : "Recebendo arquivos";
     notifyListeners();
   }
 
@@ -137,6 +154,16 @@ class IncomingRoom extends ChangeNotifier {
         status = "O outro aparelho quer enviar ${offers.length} arquivo(s). Confira o destino.";
         notifyListeners();
         await _json(request, 200, {"ok": true});
+        return;
+      }
+      if (request.method == "GET" && path == "/v1/pause") {
+        await _json(request, 200, {"here": pauseHere, "there": pauseThere});
+        return;
+      }
+      if (request.method == "POST" && path == "/v1/pause") {
+        final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map<String, dynamic>;
+        _applyRemotePause(body["paused"] == true);
+        await _json(request, 200, {"ok": true, "here": pauseHere, "there": pauseThere});
         return;
       }
       if (request.method == "GET" && path == "/v1/decision") {
@@ -265,21 +292,19 @@ class Sender {
     Offer offer,
     File file,
     void Function(int sent) onProgress,
+    Future<void> Function() gate,
   ) async {
     final client = HttpClient();
     try {
       final request = await client.putUrl(Uri.parse("http://${peer.address}:${peer.port}/v1/file/${offer.id}"));
       request.headers.set("authorization", "Bearer $token");
       var sent = 0;
-      final stream = file.openRead().transform<List<int>>(
-        StreamTransformer.fromHandlers(
-          handleData: (data, sink) {
-            sent += data.length;
-            onProgress(sent);
-            sink.add(data);
-          },
-        ),
-      );
+      final stream = file.openRead(256 * 1024).asyncMap((data) async {
+        await gate();
+        sent += data.length;
+        onProgress(sent);
+        return data;
+      });
       request.contentLength = await file.length();
       await request.addStream(stream);
       final response = await request.close();
@@ -288,6 +313,14 @@ class Sender {
     } finally {
       client.close(force: true);
     }
+  }
+
+  static Future<Map<String, dynamic>> pauseState(FoundPeer peer, String token) {
+    return _get(peer, "/v1/pause", token);
+  }
+
+  static Future<void> setPause(FoundPeer peer, String token, bool paused) async {
+    await _post(peer, "/v1/pause", {"paused": paused}, token);
   }
 
   static Future<void> finish(FoundPeer peer, String token) async {

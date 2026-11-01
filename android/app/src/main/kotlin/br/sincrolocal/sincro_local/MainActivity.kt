@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.os.StatFs
 import android.provider.MediaStore
@@ -37,14 +38,19 @@ class MainActivity : FlutterActivity() {
                         openAppSettings()
                         result.success(null)
                     }
-                    "gallery" -> Thread {
-                        try {
-                            val rows = queryGallery()
-                            runOnUiThread { result.success(rows) }
-                        } catch (error: Exception) {
-                            runOnUiThread { result.error("gallery", error.message, null) }
-                        }
-                    }.start()
+                    "gallery" -> {
+                        val kind = call.argument<String>("kind") ?: "images"
+                        val limit = call.argument<Int>("limit") ?: 250
+                        val offset = call.argument<Int>("offset") ?: 0
+                        Thread {
+                            try {
+                                val page = queryPage(kind, limit.coerceIn(1, 500), offset.coerceAtLeast(0))
+                                runOnUiThread { result.success(page) }
+                            } catch (error: Exception) {
+                                runOnUiThread { result.error("gallery", error.message, null) }
+                            }
+                        }.start()
+                    }
                     "stageMedia" -> {
                         val path = call.argument<String>("path")
                         val uri = call.argument<String>("uri")
@@ -144,61 +150,68 @@ class MainActivity : FlutterActivity() {
         startActivity(intent)
     }
 
-    private fun queryGallery(): List<Map<String, Any>> {
-        val rows = mutableListOf<Map<String, Any>>()
-        queryCollection(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "Fotos", rows)
-        queryCollection(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "Vídeos", rows)
-        return rows
-    }
-
-    private fun queryCollection(uri: Uri, category: String, rows: MutableList<Map<String, Any>>) {
+    private fun queryPage(kind: String, limit: Int, offset: Int): Map<String, Any> {
+        val images = kind != "videos"
+        val uri = if (images) MediaStore.Images.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        val category = if (images) "Fotos" else "Vídeos"
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
             MediaStore.MediaColumns.SIZE,
             MediaStore.MediaColumns.DATA,
         )
-        val sort = "${MediaStore.MediaColumns.DATE_ADDED} DESC"
+        val args = Bundle().apply {
+            putInt(android.content.ContentResolver.QUERY_ARG_OFFSET, offset)
+            putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit)
+            putStringArray(android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.MediaColumns.DATE_ADDED))
+            putInt(
+                android.content.ContentResolver.QUERY_ARG_SORT_DIRECTION,
+                android.content.ContentResolver.QUERY_SORT_DIRECTION_DESCENDING,
+            )
+        }
         val cursor = try {
-            contentResolver.query(uri, projection, null, null, sort)
+            if (Build.VERSION.SDK_INT >= 26) {
+                contentResolver.query(uri, projection, args, null)
+            } else {
+                contentResolver.query(
+                    uri,
+                    projection,
+                    null,
+                    null,
+                    "${MediaStore.MediaColumns.DATE_ADDED} DESC LIMIT $limit OFFSET $offset",
+                )
+            }
         } catch (_: Exception) {
             null
-        } ?: return
+        } ?: return mapOf("files" to emptyList<Map<String, Any>>(), "next" to offset, "done" to true)
+        val rows = mutableListOf<Map<String, Any>>()
+        var visited = 0
         cursor.use {
             val idCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
             val nameCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
             val sizeCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
             val dataCol = it.getColumnIndex(MediaStore.MediaColumns.DATA)
-            var added = 0
-            while (it.moveToNext() && added < 12000) {
+            while (it.moveToNext()) {
+                visited++
                 val id = it.getLong(idCol)
                 val name = it.getString(nameCol)?.takeIf { value -> value.isNotBlank() } ?: "arquivo"
-                if (!name.startsWith(".")) {
-                    var bytes = if (it.isNull(sizeCol)) 0L else it.getLong(sizeCol)
+                val bytes = if (it.isNull(sizeCol)) 0L else it.getLong(sizeCol)
+                if (!name.startsWith(".") && bytes > 0) {
                     val path = if (dataCol >= 0) it.getString(dataCol) ?: "" else ""
-                    if (bytes <= 0 && path.isNotEmpty()) {
-                        try {
-                            val file = File(path)
-                            if (file.exists()) bytes = file.length()
-                        } catch (_: Exception) {
-                        }
-                    }
-                    if (bytes > 0) {
-                        val content = android.content.ContentUris.withAppendedId(uri, id).toString()
-                        rows.add(
-                            mapOf(
-                                "path" to path.ifEmpty { content },
-                                "name" to name,
-                                "bytes" to bytes,
-                                "category" to category,
-                                "uri" to content,
-                            ),
-                        )
-                        added++
-                    }
+                    val content = android.content.ContentUris.withAppendedId(uri, id).toString()
+                    rows.add(
+                        mapOf(
+                            "path" to path.ifEmpty { content },
+                            "name" to name,
+                            "bytes" to bytes,
+                            "category" to category,
+                            "uri" to content,
+                        ),
+                    )
                 }
             }
         }
+        return mapOf("files" to rows, "next" to offset + visited, "done" to visited < limit)
     }
 
     private fun stageMedia(path: String?, uri: String?): String {

@@ -98,13 +98,18 @@ class DeviceBridge {
     } catch (_) {}
   }
 
-  static Future<List<Map<dynamic, dynamic>>> gallery() async {
-    final raw = await _channel.invokeMethod<List<dynamic>>("gallery");
-    if (raw == null) return [];
-    return [
-      for (final item in raw)
-        if (item is Map) Map<dynamic, dynamic>.from(item),
-    ];
+  static Future<Map<dynamic, dynamic>> galleryPage({
+    required String kind,
+    required int offset,
+    int limit = 250,
+  }) async {
+    final raw = await _channel.invokeMethod<dynamic>("gallery", {
+      "kind": kind,
+      "offset": offset,
+      "limit": limit,
+    });
+    if (raw is Map) return Map<dynamic, dynamic>.from(raw);
+    return {"files": <dynamic>[], "next": offset, "done": true};
   }
 
   static Future<String> stageMedia(String path, String uri) async {

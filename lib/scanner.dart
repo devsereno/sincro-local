@@ -28,7 +28,7 @@ class LocalFile {
   }
 }
 
-const _folders = ["DCIM", "Pictures", "Movies", "Download", "Documents", "WhatsApp/Media", "Telegram"];
+const _folders = ["Download", "Documents", "WhatsApp/Media", "Telegram"];
 
 String categoryFor(String path) {
   final lower = path.toLowerCase();
@@ -61,17 +61,48 @@ String categoryFor(String path) {
   return "Outros";
 }
 
+class GalleryChunk {
+  GalleryChunk({required this.files, required this.next, required this.done});
+
+  final List<LocalFile> files;
+  final int next;
+  final bool done;
+}
+
+Future<GalleryChunk> loadGalleryChunk(String kind, int offset, {int limit = 250}) async {
+  final page = await DeviceBridge.galleryPage(kind: kind, offset: offset, limit: limit);
+  final raw = page["files"];
+  final files = <LocalFile>[];
+  if (raw is List) {
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final file = LocalFile.fromMap(item);
+      if (file.bytes <= 0) continue;
+      files.add(file);
+    }
+  }
+  return GalleryChunk(
+    files: files,
+    next: (page["next"] as num?)?.toInt() ?? offset,
+    done: page["done"] == true,
+  );
+}
+
 Future<List<LocalFile>> scanFiles(List<VolumeInfo> volumes) async {
   final found = <LocalFile>[];
   final seen = <String>{};
   try {
-    final raw = await DeviceBridge.gallery();
-    for (final item in raw) {
-      final file = LocalFile.fromMap(item);
-      if (file.bytes <= 0) continue;
-      final key = file.path.isNotEmpty ? file.path : (file.uri ?? file.name);
-      if (!seen.add(key)) continue;
-      found.add(file);
+    for (final kind in ["images", "videos"]) {
+      var offset = 0;
+      while (found.length < 40000) {
+        final page = await loadGalleryChunk(kind, offset, limit: 400);
+        for (final file in page.files) {
+          final key = file.path.isNotEmpty ? file.path : (file.uri ?? file.name);
+          if (seen.add(key)) found.add(file);
+        }
+        if (page.done || page.next <= offset) break;
+        offset = page.next;
+      }
     }
   } catch (_) {}
   for (final volume in volumes) {
@@ -81,6 +112,32 @@ Future<List<LocalFile>> scanFiles(List<VolumeInfo> volumes) async {
       try {
         await for (final entity in root.list(recursive: true, followLinks: false)) {
           if (found.length >= 15000) return found;
+          if (entity is! File) continue;
+          final path = entity.path;
+          if (path.contains("/.") || path.contains("/Android/")) continue;
+          if (!seen.add(path)) continue;
+          final category = categoryFor(path);
+          if (category == "Fotos" || category == "Vídeos" || category == "Outros") continue;
+          final stat = await entity.stat();
+          if (stat.size <= 0) continue;
+          found.add(LocalFile(path: path, name: path.split("/").last, bytes: stat.size, category: category));
+        }
+      } catch (_) {}
+    }
+  }
+  return found;
+}
+
+Future<List<LocalFile>> scanDocuments(List<VolumeInfo> volumes) async {
+  final found = <LocalFile>[];
+  final seen = <String>{};
+  for (final volume in volumes) {
+    for (final folder in _folders) {
+      final root = Directory("${volume.path}/$folder");
+      if (!await root.exists()) continue;
+      try {
+        await for (final entity in root.list(recursive: true, followLinks: false)) {
+          if (found.length >= 2000) return found;
           if (entity is! File) continue;
           final path = entity.path;
           if (path.contains("/.") || path.contains("/Android/")) continue;
