@@ -17,6 +17,18 @@ class LocalFile {
   final String category;
   final String? uri;
 
+  Map<String, Object?> toJson() => {
+        "path": path,
+        "name": name,
+        "bytes": bytes,
+        "category": category,
+        if (uri != null) "uri": uri,
+      };
+
+  factory LocalFile.fromJson(Map<String, dynamic> json) {
+    return LocalFile.fromMap(json);
+  }
+
   factory LocalFile.fromMap(Map<dynamic, dynamic> map) {
     return LocalFile(
       path: map["path"] as String? ?? "",
@@ -54,8 +66,27 @@ String categoryFor(String path) {
       lower.endsWith(".docx") ||
       lower.endsWith(".txt") ||
       lower.endsWith(".xls") ||
-      lower.endsWith(".xlsx")) {
+      lower.endsWith(".xlsx") ||
+      lower.endsWith(".ppt") ||
+      lower.endsWith(".pptx") ||
+      lower.endsWith(".rtf")) {
     return "Documentos";
+  }
+  if (lower.endsWith(".zip") ||
+      lower.endsWith(".rar") ||
+      lower.endsWith(".7z") ||
+      lower.endsWith(".apk") ||
+      lower.endsWith(".tar") ||
+      lower.endsWith(".gz")) {
+    return "Arquivos";
+  }
+  if (lower.endsWith(".mp3") ||
+      lower.endsWith(".m4a") ||
+      lower.endsWith(".aac") ||
+      lower.endsWith(".wav") ||
+      lower.endsWith(".ogg") ||
+      lower.endsWith(".flac")) {
+    return "Áudio";
   }
   if (lower.contains("/download/")) return "Downloads";
   return "Outros";
@@ -117,7 +148,7 @@ Future<List<LocalFile>> scanFiles(List<VolumeInfo> volumes) async {
           if (path.contains("/.") || path.contains("/Android/")) continue;
           if (!seen.add(path)) continue;
           final category = categoryFor(path);
-          if (category == "Fotos" || category == "Vídeos" || category == "Outros") continue;
+          if (category == "Fotos" || category == "Vídeos") continue;
           final stat = await entity.stat();
           if (stat.size <= 0) continue;
           found.add(LocalFile(path: path, name: path.split("/").last, bytes: stat.size, category: category));
@@ -137,13 +168,13 @@ Future<List<LocalFile>> scanDocuments(List<VolumeInfo> volumes) async {
       if (!await root.exists()) continue;
       try {
         await for (final entity in root.list(recursive: true, followLinks: false)) {
-          if (found.length >= 2000) return found;
+          if (found.length >= 8000) return found;
           if (entity is! File) continue;
           final path = entity.path;
           if (path.contains("/.") || path.contains("/Android/")) continue;
           if (!seen.add(path)) continue;
           final category = categoryFor(path);
-          if (category == "Fotos" || category == "Vídeos" || category == "Outros") continue;
+          if (category == "Fotos" || category == "Vídeos") continue;
           final stat = await entity.stat();
           if (stat.size <= 0) continue;
           found.add(LocalFile(path: path, name: path.split("/").last, bytes: stat.size, category: category));

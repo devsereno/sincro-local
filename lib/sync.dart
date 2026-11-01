@@ -8,6 +8,7 @@ import "package:flutter/foundation.dart";
 
 import "device_bridge.dart";
 import "planner.dart";
+import "scanner.dart";
 import "transfer.dart";
 
 const beaconPort = 45821;
@@ -74,6 +75,7 @@ class IncomingRoom extends ChangeNotifier {
   bool pauseHere = false;
   bool pauseThere = false;
   bool keepGoing = false;
+  bool ended = false;
   int? peerBattery;
   int jobBytes = 0;
   int jobDone = 0;
@@ -83,8 +85,10 @@ class IncomingRoom extends ChangeNotifier {
   final List<({String name, int bytes, String dest, String sourcePath})> saved = [];
   final CancelFlag cancel = CancelFlag();
 
-  Future<void> start(List<Placement> Function(List<Offer> offers) buildPlan) async {
+  Future<void> start(List<Placement> Function(List<Offer> offers) buildPlan, {required String internalPath, String? sdPath}) async {
     _buildPlan = buildPlan;
+    _internalPath = internalPath;
+    _sdPath = sdPath;
     ip = await DeviceBridge.wifiAddress();
     _server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
     port = _server!.port;
@@ -153,7 +157,7 @@ class IncomingRoom extends ChangeNotifier {
         paired = true;
         status = "Pareado. Esperando a lista de arquivos.";
         notifyListeners();
-        await _json(request, 200, {"ok": true, "token": token});
+        await _json(request, 200, {"ok": true, "token": token, "name": deviceName});
         return;
       }
       if (!_authorized(request)) {
@@ -189,7 +193,35 @@ class IncomingRoom extends ChangeNotifier {
         if (remote != null && remote >= 0) peerBattery = remote;
         final level = await _batteryLevel();
         notifyListeners();
-        await _json(request, 200, {"here": pauseHere, "there": pauseThere, "battery": level});
+        await _json(request, 200, {
+          "here": pauseHere,
+          "there": pauseThere,
+          "battery": level,
+          "received": jobDone + receivedBytes,
+          "total": jobBytes,
+        });
+        return;
+      }
+      if (request.method == "POST" && path == "/v1/present") {
+        final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map<String, dynamic>;
+        final have = <String>[];
+        for (final item in body["items"] as List<dynamic>? ?? []) {
+          if (item is! Map) continue;
+          final name = item["name"]?.toString() ?? "";
+          final bytes = (item["bytes"] as num?)?.toInt() ?? 0;
+          if (name.isEmpty || bytes <= 0) continue;
+          if (await _hasComplete(name, bytes)) have.add("$name|$bytes");
+        }
+        await _json(request, 200, {"have": have});
+        return;
+      }
+      if (request.method == "POST" && path == "/v1/bye") {
+        ended = true;
+        keepGoing = false;
+        cancel.cancelled = true;
+        status = "O outro aparelho encerrou.";
+        notifyListeners();
+        await _json(request, 200, {"ok": true});
         return;
       }
       if (request.method == "GET" && path == "/v1/pause") {
@@ -230,7 +262,7 @@ class IncomingRoom extends ChangeNotifier {
           return;
         }
         current = item.name;
-        final dest = await uniqueFile(Directory("$root/SincroLocal"), item.name);
+        final dest = await incomingFile(Directory("$root/SincroLocal"), item.name, item.bytes);
         final hash = await writeHashed(
           source: request,
           dest: dest,
@@ -273,6 +305,16 @@ class IncomingRoom extends ChangeNotifier {
   bool _authorized(HttpRequest request) {
     if (token == null) return false;
     return request.headers.value("authorization") == "Bearer $token";
+  }
+
+  Future<bool> _hasComplete(String name, int bytes) async {
+    final clean = safeName(name);
+    for (final root in [_internalPath, _sdPath]) {
+      if (root == null || root.isEmpty) continue;
+      final file = File("$root/SincroLocal/$clean");
+      if (await file.exists() && await file.length() == bytes) return true;
+    }
+    return false;
   }
 
   Future<void> close() async {
@@ -319,10 +361,10 @@ class Sender {
     return found.values.toList();
   }
 
-  static Future<String> pair(FoundPeer peer, String code) async {
+  static Future<({String token, String name})> pair(FoundPeer peer, String code) async {
     final body = await _post(peer, "/v1/pair", {"code": code}, null);
     if (body["ok"] != true) throw StateError("Código recusado");
-    return body["token"] as String;
+    return (token: body["token"] as String, name: body["name"] as String? ?? peer.name);
   }
 
   static Future<void> manifest(
@@ -347,6 +389,23 @@ class Sender {
 
   static Future<Map<String, dynamic>> decision(FoundPeer peer, String token) async {
     return _get(peer, "/v1/decision", token);
+  }
+
+  static Future<Set<String>> present(FoundPeer peer, String token, List<LocalFile> files) async {
+    try {
+      final body = await _post(peer, "/v1/present", {
+        "items": [
+          for (final file in files) {"name": file.name, "bytes": file.bytes},
+        ],
+      }, token);
+      return {for (final item in body["have"] as List<dynamic>? ?? []) item.toString()};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static Future<void> bye(FoundPeer peer, String token) async {
+    await _post(peer, "/v1/bye", {}, token);
   }
 
   static Future<void> upload(

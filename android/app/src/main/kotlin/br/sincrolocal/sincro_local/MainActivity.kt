@@ -150,10 +150,37 @@ class MainActivity : FlutterActivity() {
         startActivity(intent)
     }
 
+    private fun isGalleryName(name: String): Boolean {
+        val lower = name.lowercase()
+        return listOf(".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif", ".bmp", ".dng", ".mp4", ".mov", ".mkv", ".3gp", ".webm")
+            .any { lower.endsWith(it) }
+    }
+
+    private fun categoryName(name: String): String {
+        val lower = name.lowercase()
+        return when {
+            listOf(".pdf", ".doc", ".docx", ".txt", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf").any { lower.endsWith(it) } -> "Documentos"
+            listOf(".zip", ".rar", ".7z", ".apk", ".tar", ".gz").any { lower.endsWith(it) } -> "Arquivos"
+            listOf(".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac").any { lower.endsWith(it) } -> "Áudio"
+            else -> "Downloads"
+        }
+    }
+
     private fun queryPage(kind: String, limit: Int, offset: Int): Map<String, Any> {
-        val images = kind != "videos"
-        val uri = if (images) MediaStore.Images.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        val category = if (images) "Fotos" else "Vídeos"
+        val uri = when (kind) {
+            "videos" -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            "files" -> if (Build.VERSION.SDK_INT >= 29) {
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            } else {
+                MediaStore.Files.getContentUri("external")
+            }
+            else -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        }
+        val fixedCategory = when (kind) {
+            "videos" -> "Vídeos"
+            "files" -> null
+            else -> "Fotos"
+        }
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
@@ -196,7 +223,7 @@ class MainActivity : FlutterActivity() {
                 val id = it.getLong(idCol)
                 val name = it.getString(nameCol)?.takeIf { value -> value.isNotBlank() } ?: "arquivo"
                 val bytes = if (it.isNull(sizeCol)) 0L else it.getLong(sizeCol)
-                if (!name.startsWith(".") && bytes > 0) {
+                if (!name.startsWith(".") && bytes > 0 && (kind != "files" || !isGalleryName(name))) {
                     val path = if (dataCol >= 0) it.getString(dataCol) ?: "" else ""
                     val content = android.content.ContentUris.withAppendedId(uri, id).toString()
                     rows.add(
@@ -204,7 +231,7 @@ class MainActivity : FlutterActivity() {
                             "path" to path.ifEmpty { content },
                             "name" to name,
                             "bytes" to bytes,
-                            "category" to category,
+                            "category" to (fixedCategory ?: categoryName(name)),
                             "uri" to content,
                         ),
                     )

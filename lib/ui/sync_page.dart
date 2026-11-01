@@ -9,6 +9,7 @@ import "package:wakelock_plus/wakelock_plus.dart";
 import "../device_bridge.dart";
 import "../history_store.dart";
 import "../planner.dart";
+import "../resume_store.dart";
 import "../scanner.dart";
 import "../settings_store.dart";
 import "../sync.dart";
@@ -55,6 +56,9 @@ class _SyncPageState extends State<SyncPage> {
   int? _otherNow;
   int _myBattery = -1;
   DateTime? _batteryAt;
+  String _peerLabel = "";
+  LastTransfer? _resume;
+  bool _goHome = false;
   Timer? _poll;
 
   VolumeInfo? get _internal => _volumes.where((item) => !item.removable).cast<VolumeInfo?>().firstOrNull;
@@ -103,9 +107,15 @@ class _SyncPageState extends State<SyncPage> {
         internalBufferGb: widget.settings.internalBufferGb,
         sdBufferMb: widget.settings.sdBufferMb,
       );
-    });
+    }, internalPath: _internal?.path ?? "/storage/emulated/0", sdPath: _sd?.path);
     room.addListener(() {
-      if (mounted) setState(() {});
+      if (!mounted) return;
+      if (room.ended) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("O outro aparelho encerrou.")));
+        _backToStart();
+        return;
+      }
+      setState(() {});
       if (room.finished) _saveReceive(room);
     });
     await DeviceBridge.hold();
@@ -176,9 +186,11 @@ class _SyncPageState extends State<SyncPage> {
       _status = "Conferindo o código...";
     });
     try {
-      final token = await Sender.pair(peer, code);
+      final paired = await Sender.pair(peer, code);
       if (!mounted) return;
-      await _loadLibrary(token);
+      _peerLabel = paired.name;
+      _resume = await ResumeStore.loadSession();
+      await _loadLibrary(paired.token);
     } catch (error) {
       if (mounted) {
         setState(() => _busy = false);
@@ -188,12 +200,18 @@ class _SyncPageState extends State<SyncPage> {
   }
 
   Future<void> _loadLibrary(String token) async {
+    final cached = await ResumeStore.loadLibrary();
     setState(() {
       _token = token;
       _busy = false;
       _loadingLibrary = true;
-      _files = [];
-      _status = "Buscando os primeiros arquivos...";
+      if (cached.isNotEmpty) {
+        _files = cached;
+        _status = "Lista salva. Atualizando fotos, vídeos, zip e documentos...";
+      } else {
+        _files = [];
+        _status = "Buscando os primeiros arquivos...";
+      }
     });
     var access = await DeviceBridge.mediaAccess();
     if (access != "all") access = await DeviceBridge.requestMediaAccess() ? await DeviceBridge.mediaAccess() : access;
@@ -201,25 +219,26 @@ class _SyncPageState extends State<SyncPage> {
     if (access == "none") {
       setState(() {
         _loadingLibrary = false;
-        _files = [];
-        _status = "Sem permissão para a galeria. Toque em Permitir fotos e vídeos e escolha Permitir tudo.";
+        _status = _files.isEmpty
+            ? "Sem permissão para a galeria. Toque em Permitir fotos e vídeos e escolha Permitir tudo."
+            : "Sem permissão para atualizar. Mostrando a lista salva.";
       });
       return;
     }
-    for (final kind in ["images", "videos"]) {
+    for (final kind in ["images", "videos", "files"]) {
       var offset = 0;
       while (mounted && _token == token && !_stop) {
         final page = await loadGalleryChunk(kind, offset);
         if (!mounted || _token != token) return;
         setState(() {
+          final seen = _files.map((file) => file.path).toSet();
           for (final file in page.files) {
+            if (!seen.add(file.path)) continue;
             _files.add(file);
             if (_followAll) _selected.add(file.path);
           }
           if (_busy) return;
-          final photos = _files.where((file) => file.category == "Fotos").length;
-          final videos = _files.where((file) => file.category == "Vídeos").length;
-          _status = "Carregando... $photos fotos e $videos vídeos. Já dá para escolher.";
+          _status = _libraryStatus();
         });
         if (page.done || page.next <= offset) break;
         offset = page.next;
@@ -229,21 +248,23 @@ class _SyncPageState extends State<SyncPage> {
     final extras = await scanDocuments(await DeviceBridge.volumes());
     if (!mounted || _token != token) return;
     final known = _files.map((file) => file.path).toSet();
-    final fresh = extras.where((file) => file.category != "Fotos" && file.category != "Vídeos" && known.add(file.path));
-    final photos = _files.where((file) => file.category == "Fotos").length + fresh.where((file) => file.category == "Fotos").length;
-    final videos = _files.where((file) => file.category == "Vídeos").length;
+    final fresh = extras.where((file) => known.add(file.path));
     setState(() {
       for (final file in fresh) {
         _files.add(file);
         if (_followAll) _selected.add(file.path);
       }
       _loadingLibrary = false;
-      if (!_busy) {
-        _status = _files.isEmpty
-            ? "Não achei fotos nem vídeos. Se o Android perguntou, escolha Permitir tudo."
-            : "Galeria completa. $photos fotos e $videos vídeos.";
-      }
+      if (!_busy) _status = _files.isEmpty ? "Não achei arquivos. Se o Android perguntou, escolha Permitir tudo." : _libraryStatus();
     });
+    if (_files.isNotEmpty) await ResumeStore.saveLibrary(_files);
+  }
+
+  String _libraryStatus() {
+    final photos = _files.where((file) => file.category == "Fotos").length;
+    final videos = _files.where((file) => file.category == "Vídeos").length;
+    final others = _files.length - photos - videos;
+    return "$photos fotos, $videos vídeos e $others outros arquivos.";
   }
 
   Future<void> _allowGallery() async {
@@ -269,8 +290,20 @@ class _SyncPageState extends State<SyncPage> {
     final peer = _peer;
     final token = _token;
     if (peer == null || token == null) return;
-    final chosen = _files.where((file) => _selected.contains(file.path)).toList();
-    if (chosen.isEmpty) return;
+    final picked = _files.where((file) => _selected.contains(file.path)).toList();
+    if (picked.isEmpty) return;
+    final have = await Sender.present(peer, token, picked);
+    final chosen = picked.where((file) => !have.contains("${file.name}|${file.bytes}")).toList();
+    if (chosen.isEmpty) {
+      if (mounted) {
+        setState(() => _status = "Esses arquivos já estão completos no outro aparelho. Nada novo para enviar.");
+      }
+      return;
+    }
+    final doneKeys = {...have};
+    if (have.isNotEmpty && mounted) {
+      setState(() => _status = "Vou pular ${have.length} arquivo(s) que já chegaram completos.");
+    }
     final jobBytes = chosen.fold<int>(0, (sum, file) => sum + file.bytes);
     var batches = [chosen];
     const limit = 5 * gb;
@@ -336,13 +369,19 @@ class _SyncPageState extends State<SyncPage> {
         final state = await Sender.pulse(_peer!, _token!, await _level());
         if (!mounted) return;
         final remote = state["battery"];
+        final got = state["received"];
         setState(() {
           _pauseThere = state["here"] == true;
           if (remote is num && remote >= 0) _otherNow = remote.toInt();
+          if ((_pauseHere || _pauseThere) && got is num && _total > 0) {
+            final value = got.toInt();
+            if (value >= 0 && value <= _total) _sent = value;
+          }
         });
       } catch (_) {}
     });
     try {
+      await ResumeStore.saveSession(LastTransfer(peer: _peerLabel, files: picked, done: doneKeys));
       var jobDone = 0;
       var sentFiles = 0;
       for (var part = 0; part < batches.length; part++) {
@@ -426,6 +465,8 @@ class _SyncPageState extends State<SyncPage> {
           }, _waitIfPaused);
           jobDone += item.offer.bytes;
           if (mounted) setState(() => _sent = jobDone);
+          doneKeys.add("${item.offer.name}|${item.offer.bytes}");
+          await ResumeStore.saveSession(LastTransfer(peer: _peerLabel, files: picked, done: doneKeys));
           saved.add(HistoryFile(name: item.offer.name, bytes: item.offer.bytes, dest: "remoto", sourcePath: item.file.path));
         }
         final hasNext = part + 1 < batches.length;
@@ -455,12 +496,27 @@ class _SyncPageState extends State<SyncPage> {
         }
       }
     } catch (error) {
-      if (mounted) setState(() => _status = _plainError(error));
+      final text = error.toString();
+      final remoteClosed = text.contains("Connection refused") ||
+          text.contains("errno = 111") ||
+          text.contains("SocketException") ||
+          text.contains("encerrou");
+      if (remoteClosed) {
+        _goHome = true;
+      } else if (mounted) {
+        setState(() => _status = _plainError(error));
+      }
     } finally {
       _poll?.cancel();
       await WakelockPlus.disable();
       await DeviceBridge.release();
-      if (mounted) setState(() => _busy = false);
+      if (_goHome && mounted) {
+        _goHome = false;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("O outro aparelho encerrou. Voltando ao início.")));
+        _backToStart();
+      } else if (mounted) {
+        setState(() => _busy = false);
+      }
     }
   }
 
@@ -491,7 +547,7 @@ class _SyncPageState extends State<SyncPage> {
         builder: (context) => AlertDialog(
           title: const Text("Encerrar sincronização?"),
           content: const Text(
-            "Isso vai pausar e interromper a transferência dos arquivos entre os dois aparelhos. O que já chegou fica salvo.",
+            "Isso encerra nos dois aparelhos e interrompe a transferência. O que já chegou fica salvo.",
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Continuar")),
@@ -502,9 +558,56 @@ class _SyncPageState extends State<SyncPage> {
       if (leave != true) return;
     }
     _stop = true;
-    _room?.cancel.cancelled = true;
-    await _room?.close();
-    if (mounted) Navigator.pop(context);
+    final peer = _peer;
+    final token = _token;
+    if (peer != null && token != null) {
+      try {
+        await Sender.bye(peer, token);
+      } catch (_) {}
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Conexão encerrada nos dois aparelhos.")));
+    }
+    _backToStart();
+  }
+
+  void _backToStart() {
+    if (!mounted) return;
+    _stop = true;
+    _poll?.cancel();
+    final room = _room;
+    _room = null;
+    room?.cancel.cancelled = true;
+    room?.close();
+    WakelockPlus.disable();
+    DeviceBridge.release();
+    setState(() {
+      _role = null;
+      _peer = null;
+      _token = null;
+      _busy = false;
+      _sent = 0;
+      _total = 0;
+      _pauseHere = false;
+      _pauseThere = false;
+      _currentName = "";
+      _status = "";
+    });
+  }
+
+  Future<void> _resumeLast() async {
+    final session = _resume;
+    if (session == null || _busy) return;
+    final known = _files.map((file) => file.path).toSet();
+    setState(() {
+      for (final file in session.files) {
+        if (known.add(file.path)) _files.add(file);
+      }
+      _selected
+        ..clear()
+        ..addAll(session.files.map((file) => file.path));
+    });
+    await _send();
   }
 
   @override
@@ -668,6 +771,15 @@ class _SyncPageState extends State<SyncPage> {
         Text(_status),
         const SizedBox(height: 8),
         if (_loadingLibrary) const LinearProgressIndicator(),
+        if (_resume != null && _resume!.peer.isNotEmpty && _resume!.peer == _peerLabel && !_busy)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: OutlinedButton.icon(
+              onPressed: _resumeLast,
+              icon: const Icon(Icons.restore),
+              label: Text("Retomar última transferência · faltam ${_resume!.remaining}"),
+            ),
+          ),
         if (_busy)
           Expanded(
             child: ListView(
