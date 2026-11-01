@@ -144,17 +144,17 @@ class DeviceBridge {
     }
   }
 
-  static Future<bool> p2pFind() async {
+  static Future<bool> p2pName(String name) async {
     try {
-      return await _channel.invokeMethod<bool>("p2pFind") == true;
+      return await _channel.invokeMethod<bool>("p2pName", {"name": name}) == true;
     } catch (_) {
       return false;
     }
   }
 
-  static Future<bool> p2pJoin(String address) async {
+  static Future<bool> p2pJoinNet(String ssid, String pass) async {
     try {
-      return await _channel.invokeMethod<bool>("p2pJoin", {"address": address}) == true;
+      return await _channel.invokeMethod<bool>("p2pJoinNet", {"ssid": ssid, "pass": pass}) == true;
     } catch (_) {
       return false;
     }

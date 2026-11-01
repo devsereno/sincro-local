@@ -6,7 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.net.wifi.p2p.WifiP2pConfig
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiNetworkSpecifier
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
@@ -20,6 +24,9 @@ class DirectLink(private val activity: MainActivity) {
     private var registered = false
     private val peers = mutableListOf<WifiP2pDevice>()
     private var info: WifiP2pInfo? = null
+    private var ssid: String? = null
+    private var passphrase: String? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var message = "Wi-Fi Direct parado"
 
     private val receiver = object : BroadcastReceiver() {
@@ -39,6 +46,8 @@ class DirectLink(private val activity: MainActivity) {
                         intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
                     }
                     message = if (info?.groupFormed == true) "Rede direta formada" else "Aguardando a rede direta"
+                    readGroup()
+                }
                 }
             }
         }
@@ -75,6 +84,30 @@ class DirectLink(private val activity: MainActivity) {
         }
     }
 
+    fun rename(name: String) {
+        ensure()
+        val ch = channel ?: return
+        val clean = name.trim().take(28).ifEmpty { "Sincro" }
+        try {
+            val method = manager?.javaClass?.getMethod(
+                "setDeviceName",
+                WifiP2pManager.Channel::class.java,
+                String::class.java,
+                WifiP2pManager.ActionListener::class.java,
+            )
+            method?.invoke(manager, ch, clean, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    message = "Nome deste aparelho: $clean"
+                }
+                override fun onFailure(reason: Int) {
+                    message = "Não consegui gravar o nome ($reason)"
+                }
+            })
+        } catch (_: Exception) {
+            message = "Este Android não deixa mudar o nome da rede"
+        }
+    }
+
     fun own() {
         ensure()
         val ch = channel ?: return
@@ -82,7 +115,8 @@ class DirectLink(private val activity: MainActivity) {
         @Suppress("DEPRECATION")
         manager?.createGroup(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
-                message = "Rede direta criada. Esperando o outro aparelho."
+                message = "Rede direta criada. Mostre o QR."
+                readGroup()
             }
             override fun onFailure(reason: Int) {
                 message = "Não consegui criar a rede direta ($reason)"
@@ -104,30 +138,69 @@ class DirectLink(private val activity: MainActivity) {
         })
     }
 
-    fun join(address: String) {
+    fun joinNetwork(networkName: String, networkPass: String) {
         ensure()
-        val ch = channel ?: return
-        val config = WifiP2pConfig().apply { deviceAddress = address }
-        message = "Conectando direto..."
-        manager?.connect(ch, config, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
-                message = "Pedido enviado. Aceite no outro aparelho se ele pedir."
+        if (Build.VERSION.SDK_INT < 29) {
+            message = "Este Android é antigo para entrar pelo QR."
+            return
+        }
+        val ch = channel
+        if (ch != null) manager?.cancelConnect(ch, null)
+        val connectivity = activity.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        networkCallback?.let {
+            try {
+                connectivity.unregisterNetworkCallback(it)
+            } catch (_: Exception) {
             }
-            override fun onFailure(reason: Int) {
-                message = "Não conectou direto ($reason)"
+        }
+        val specifier = WifiNetworkSpecifier.Builder()
+            .setSsid(networkName)
+            .setWpa2Passphrase(networkPass)
+            .build()
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .setNetworkSpecifier(specifier)
+            .build()
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                connectivity.bindProcessToNetwork(network)
+                message = "Conectado na rede direta"
             }
-        })
+
+            override fun onUnavailable() {
+                message = "Não entrou na rede direta. Leia o QR outra vez."
+            }
+        }
+        networkCallback = callback
+        message = "Aceite a rede uma vez."
+        connectivity.requestNetwork(request, callback)
     }
 
     fun stop() {
+        val connectivity = activity.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        networkCallback?.let {
+            try {
+                connectivity.unregisterNetworkCallback(it)
+            } catch (_: Exception) {
+            }
+        }
+        networkCallback = null
+        connectivity.bindProcessToNetwork(null)
         val ch = channel
-        if (ch != null) manager?.removeGroup(ch, null)
+        if (ch != null) {
+            manager?.cancelConnect(ch, null)
+            manager?.removeGroup(ch, null)
+        }
         info = null
+        ssid = null
+        passphrase = null
         peers.clear()
         message = "Wi-Fi Direct parado"
     }
 
     fun status(): Map<String, Any?> {
+        readGroup()
         val owner = info?.groupOwnerAddress?.hostAddress
         val mine = p2pAddress() ?: if (info?.isGroupOwner == true) owner else null
         return mapOf(
@@ -136,8 +209,19 @@ class DirectLink(private val activity: MainActivity) {
             "isOwner" to (info?.isGroupOwner == true),
             "ownerIp" to owner,
             "ip" to mine,
+            "ssid" to ssid,
+            "passphrase" to passphrase,
             "peers" to peers.map { mapOf("name" to it.deviceName, "address" to it.deviceAddress) },
         )
+    }
+
+    private fun readGroup() {
+        val ch = channel ?: return
+        manager?.requestGroupInfo(ch) { group ->
+            if (group == null) return@requestGroupInfo
+            ssid = group.networkName
+            passphrase = group.passphrase
+        }
     }
 
     private fun p2pAddress(): String? {

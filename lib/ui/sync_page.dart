@@ -4,6 +4,7 @@ import "package:battery_plus/battery_plus.dart";
 import "package:flutter/material.dart";
 import "package:mobile_scanner/mobile_scanner.dart";
 import "package:qr_flutter/qr_flutter.dart";
+import "package:shared_preferences/shared_preferences.dart";
 import "package:wakelock_plus/wakelock_plus.dart";
 
 import "../catalog_store.dart";
@@ -83,6 +84,11 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    SharedPreferences.getInstance().then((prefs) {
+      final saved = prefs.getString("directName");
+      if (!mounted || saved == null || saved.isEmpty) return;
+      _name.text = saved;
+    });
   }
 
   @override
@@ -95,6 +101,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     DeviceBridge.release();
     _manual.dispose();
     _code.dispose();
+    _name.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -206,74 +213,71 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
   }
 
   String _direct = "";
-  List<Map<String, String>> _directPeers = [];
+  String _directSsid = "";
+  String _directPass = "";
+  final _name = TextEditingController();
 
   Future<void> _ownDirect() async {
+    final name = _name.text.trim().isEmpty ? "Sincro" : _name.text.trim();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString("directName", name);
+    await DeviceBridge.p2pName(name);
     final ok = await DeviceBridge.p2pOwn();
     if (!ok && mounted) {
       setState(() => _direct = "Permita aparelhos próximos para criar a rede direta.");
       return;
     }
-    for (var i = 0; i < 16; i++) {
-      await Future.delayed(const Duration(milliseconds: 500));
-      final status = await DeviceBridge.p2pStatus();
-      final ip = status["ip"]?.toString();
-      if (!mounted) return;
-      setState(() => _direct = status["message"]?.toString() ?? "");
-      if (ip != null && ip.isNotEmpty && ip != "null") {
-        _room?.showAddress(ip);
-        setState(() => _direct = "Rede direta neste aparelho: $ip. O outro entra nela e lê o QR.");
-        return;
-      }
-    }
-  }
-
-  Future<void> _findDirect() async {
-    final ok = await DeviceBridge.p2pFind();
-    if (!ok && mounted) {
-      setState(() => _direct = "Permita aparelhos próximos para achar a rede direta.");
-      return;
-    }
-    setState(() => _direct = "Procurando a rede direta...");
-    await Future.delayed(const Duration(seconds: 4));
-    final status = await DeviceBridge.p2pStatus();
-    final raw = status["peers"];
-    final peers = <Map<String, String>>[];
-    if (raw is List) {
-      for (final item in raw) {
-        if (item is Map) {
-          peers.add({"name": item["name"]?.toString() ?? "Aparelho", "address": item["address"]?.toString() ?? ""});
-        }
-      }
-    }
-    if (!mounted) return;
-    setState(() {
-      _directPeers = peers.where((item) => item["address"]!.isNotEmpty).toList();
-      _direct = _directPeers.isEmpty ? "Nenhum aparelho direto por perto. Crie a rede no que vai receber." : "Toque no aparelho para ligar direto.";
-    });
-  }
-
-  Future<void> _joinDirect(String address, String name) async {
-    setState(() => _direct = "Ligando direto em $name...");
-    await DeviceBridge.p2pJoin(address);
     for (var i = 0; i < 20; i++) {
       await Future.delayed(const Duration(milliseconds: 500));
       final status = await DeviceBridge.p2pStatus();
-      final owner = status["ownerIp"]?.toString();
-      if (status["groupFormed"] == true && owner != null && owner.isNotEmpty && owner != "null") {
-        if (!mounted) return;
-        final port = _peer?.port ?? 0;
+      final ip = status["ip"]?.toString();
+      final ssid = status["ssid"]?.toString() ?? "";
+      final pass = status["passphrase"]?.toString() ?? "";
+      if (!mounted) return;
+      if (ip != null && ip.isNotEmpty && ip != "null") {
+        _room?.showAddress(ip);
         setState(() {
-          _direct = "Direto com $name. IP da rede: $owner. Agora leia o QR.";
-          if (port > 0) {
-            _peer = FoundPeer(name: name, address: owner, port: port);
-            _manual.text = "$owner:$port";
-          }
+          _directSsid = ssid;
+          _directPass = pass;
+          _direct = ssid.isEmpty
+              ? "Rede de $name criada. Esperando a senha do Wi-Fi Direct..."
+              : "Rede de $name pronta. Mostre este QR. O outro aceita uma vez só.";
         });
-        return;
+        if (ssid.isNotEmpty && pass.isNotEmpty) return;
+      } else {
+        setState(() => _direct = status["message"]?.toString() ?? "Criando a rede de $name...");
       }
     }
-    if (mounted) setState(() => _direct = "O outro aparelho não aceitou a rede direta.");
+  }
+
+  String _qrLink(IncomingRoom room) {
+    if (room.ip == null || room.ip!.isEmpty) return "";
+    return Uri(
+      scheme: "sincro",
+      host: room.ip,
+      port: room.port,
+      queryParameters: {
+        if (_directSsid.isNotEmpty) "s": _directSsid,
+        if (_directPass.isNotEmpty) "k": _directPass,
+        if (_name.text.trim().isNotEmpty) "n": _name.text.trim(),
+      },
+    ).toString();
+  }
+
+  Future<void> _enterDirect(String ssid, String pass, String label) async {
+    setState(() => _direct = "Aceite a rede de $label uma vez. Não vai ficar pedindo de novo.");
+    await DeviceBridge.p2pJoinNet(ssid, pass);
+    for (var i = 0; i < 24; i++) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      final status = await DeviceBridge.p2pStatus();
+      final message = status["message"]?.toString() ?? "";
+      if (!mounted) return;
+      if (message.startsWith("Conectado")) {
+        setState(() => _direct = "Ligado direto em $label. Agora digite o código de 3 letras.");
+        return;
+      }
+      setState(() => _direct = message.isEmpty ? "Entrando na rede de $label..." : message);
+    }
   }
 
   Future<void> _choosePeer(FoundPeer peer) async {
@@ -288,10 +292,16 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Esse QR não é do SincroLocal.")));
       return;
     }
+    final uri = Uri.parse(raw.trim());
     setState(() {
       _peer = peer;
       _manual.text = "${peer.address}:${peer.port}";
     });
+    final ssid = uri.queryParameters["s"];
+    final pass = uri.queryParameters["k"];
+    if (ssid != null && pass != null && ssid.isNotEmpty && pass.isNotEmpty) {
+      await _enterDirect(ssid, pass, uri.queryParameters["n"] ?? "o outro aparelho");
+    }
   }
 
   FoundPeer? _peerFromQr(String raw) {
@@ -876,7 +886,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
   }
 
   Widget _receiveBody(IncomingRoom room) {
-    final link = room.ip == null ? "" : "sincro://${room.ip}:${room.port}";
+    final link = _qrLink(room);
     final live = room.keepGoing || (room.decided && !room.finished);
     if (live) {
       final done = room.jobDone + room.receivedBytes;
@@ -928,6 +938,11 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
         ),
         if (_direct.isNotEmpty) Text(_direct),
         const SizedBox(height: 8),
+        TextField(
+          controller: _name,
+          decoration: const InputDecoration(labelText: "Nome deste aparelho na rede direta"),
+        ),
+        const SizedBox(height: 8),
         OutlinedButton.icon(
           onPressed: _ownDirect,
           icon: const Icon(Icons.wifi_tethering),
@@ -957,21 +972,9 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     if (_token == null) {
       return ListView(
         children: [
-          const Text("Aponte a câmera para o QR do aparelho que está recebendo. Depois digite só o código de 3 letras."),
+          const Text("No aparelho que recebe, escolha um nome, crie a rede direta e mostre o QR. Aqui só leia esse QR e aceite a rede uma vez."),
           const SizedBox(height: 12),
           if (_direct.isNotEmpty) Text(_direct),
-          OutlinedButton.icon(
-            onPressed: _busy ? null : _findDirect,
-            icon: const Icon(Icons.wifi_tethering),
-            label: const Text("Entrar na rede direta"),
-          ),
-          for (final item in _directPeers)
-            ListTile(
-              leading: const Icon(Icons.devices),
-              title: Text(item["name"] ?? "Aparelho"),
-              subtitle: const Text("Ligar sem passar pelo roteador"),
-              onTap: () => _joinDirect(item["address"] ?? "", item["name"] ?? "Aparelho"),
-            ),
           const SizedBox(height: 8),
           FilledButton(onPressed: _busy ? null : _openCamera, child: const Text("Abrir câmera e ler o QR")),
           const SizedBox(height: 16),

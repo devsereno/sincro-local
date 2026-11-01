@@ -94,10 +94,11 @@ class MainActivity : FlutterActivity() {
                     }
                     "p2pStatus" -> result.success(direct.status())
                     "p2pOwn" -> startDirect(result) { direct.own() }
-                    "p2pFind" -> startDirect(result) { direct.find() }
-                    "p2pJoin" -> {
-                        val address = call.argument<String>("address") ?: ""
-                        startDirect(result) { direct.join(address) }
+                    "p2pName" -> startDirect(result) { direct.rename(call.argument<String>("name") ?: "Sincro") }
+                    "p2pJoinNet" -> {
+                        val ssid = call.argument<String>("ssid") ?: ""
+                        val pass = call.argument<String>("pass") ?: ""
+                        startDirect(result) { direct.joinNetwork(ssid, pass) }
                     }
                     "p2pStop" -> {
                         direct.stop()
