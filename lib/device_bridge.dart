@@ -72,6 +72,12 @@ class DeviceBridge {
     }
   }
 
+  static Future<void> multicast(bool on) async {
+    try {
+      await _channel.invokeMethod("multicast", {"on": on});
+    } catch (_) {}
+  }
+
   static Future<void> hold() async {
     try {
       await _channel.invokeMethod("hold");
