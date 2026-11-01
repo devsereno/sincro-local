@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.StatFs
+import android.os.storage.StorageManager
 import android.provider.MediaStore
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
@@ -297,15 +298,25 @@ class MainActivity : FlutterActivity() {
 
     private fun volumes(): List<Map<String, Any>> {
         val result = mutableListOf<Map<String, Any>>()
-        val internal = Environment.getExternalStorageDirectory()
-        if (internal != null && internal.exists()) {
-            result.add(volume("Memória interna", internal, false))
+        val seen = mutableSetOf<String>()
+        fun add(label: String, dir: File?, removable: Boolean) {
+            if (dir == null || !dir.exists() || !dir.isDirectory) return
+            val path = dir.absolutePath
+            if (!seen.add(path)) return
+            result.add(volume(label, dir, removable))
+        }
+        add("Memória interna", Environment.getExternalStorageDirectory(), false)
+        if (Build.VERSION.SDK_INT >= 24) {
+            val manager = getSystemService(StorageManager::class.java)
+            for (storage in manager.storageVolumes) {
+                val dir = storage.directory ?: continue
+                add(if (storage.isRemovable) "Cartão SD" else "Memória interna", dir, storage.isRemovable)
+            }
         }
         File("/storage").listFiles()?.forEach { dir ->
             val name = dir.name
             if (name == "emulated" || name == "self" || name.startsWith(".")) return@forEach
-            if (!dir.isDirectory) return@forEach
-            result.add(volume("Cartão SD", dir, true))
+            add("Cartão SD", dir, true)
         }
         return result
     }

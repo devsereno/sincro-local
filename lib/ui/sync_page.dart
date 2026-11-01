@@ -6,6 +6,7 @@ import "package:mobile_scanner/mobile_scanner.dart";
 import "package:qr_flutter/qr_flutter.dart";
 import "package:wakelock_plus/wakelock_plus.dart";
 
+import "../catalog_store.dart";
 import "../device_bridge.dart";
 import "../history_store.dart";
 import "../planner.dart";
@@ -72,8 +73,11 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     return cards.firstOrNull;
   }
 
+  final _catalog = CatalogStore();
+  Set<String> _remoteKeys = {};
   bool _needAllFiles = false;
   bool _loadingOthers = false;
+  bool _hearing = false;
 
   @override
   void initState() {
@@ -148,18 +152,29 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
   }
 
   Future<void> _indexRoom(IncomingRoom room) async {
-    room.noteIndexed(0, "Lendo a memória interna e o cartão...");
+    final saved = await _catalog.loadKeys();
+    room.knownKeys.addAll(saved);
+    room.noteIndexed(
+      saved.length,
+      saved.isEmpty
+          ? "Lendo a memória interna e o cartão para montar o banco..."
+          : "Banco deste aparelho: ${saved.length} arquivos. Atualizando a leitura...",
+    );
+    final rows = <({String name, int bytes, String category, String path})>[];
     var seen = 0;
-    final total = await indexStorage(_volumes, (name, bytes) {
+    final total = await indexStorage(_volumes, (path, name, bytes) {
+      final category = categoryFor(path);
       room.knownKeys.add("$name|$bytes");
       room.knownKeys.add("${safeName(name)}|$bytes");
+      rows.add((name: name, bytes: bytes, category: category, path: path));
       seen++;
       if (seen % 400 == 0) {
         room.noteIndexed(seen, "Conferindo interna e cartão: $seen arquivos");
       }
     });
+    if (rows.isNotEmpty) await _catalog.saveAll(rows);
     if (!mounted) return;
-    room.noteIndexed(total, "Conferidos $total arquivos na interna e no cartão. O que já existir não será enviado de novo.");
+    room.noteIndexed(total, "Banco pronto: $total arquivos na interna e no cartão. O que já existir não será enviado de novo.");
   }
 
   final _savedPaths = <String>{};
@@ -225,7 +240,9 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
       final paired = await Sender.pair(peer, code);
       if (!mounted) return;
       _peerLabel = paired.name;
+      _token = paired.token;
       _resume = await ResumeStore.loadSession();
+      unawaited(_pullCatalog());
       await _loadLibrary(paired.token);
     } catch (error) {
       if (mounted) {
@@ -381,6 +398,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     final picked = _files.where((file) => _selected.contains(file.path)).toList();
     if (picked.isEmpty) return;
     final have = await Sender.present(peer, token, picked);
+    have.addAll(_remoteKeys);
     final chosen = picked.where((file) => !have.contains("${file.name}|${file.bytes}")).toList();
     if (chosen.isEmpty) {
       if (mounted) {
@@ -389,8 +407,8 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
       return;
     }
     final doneKeys = {...have};
-    if (have.isNotEmpty && mounted) {
-      setState(() => _status = "Vou pular ${have.length} arquivo(s) que já chegaram completos.");
+    if (picked.length > chosen.length && mounted) {
+      setState(() => _status = "Vou pular ${picked.length - chosen.length} arquivo(s) que já estão no outro aparelho.");
     }
     final jobBytes = chosen.fold<int>(0, (sum, file) => sum + file.bytes);
     var batches = [chosen];
@@ -458,7 +476,8 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
         if (_stop) throw StateError("interrompido");
         final batch = batches[part];
         final offers = [
-          for (var i = 0; i < batch.length; i++) Offer(id: "$i", name: batch[i].name, bytes: batch[i].bytes),
+          for (var i = 0; i < batch.length; i++)
+            Offer(id: "$i", name: batch[i].name, bytes: batch[i].bytes, category: batch[i].category),
         ];
         setState(() {
           _part = part + 1;
@@ -610,7 +629,19 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  bool _hearing = false;
+  Future<void> _pullCatalog() async {
+    final peer = _peer;
+    final token = _token;
+    if (peer == null || token == null) return;
+    final keys = await Sender.catalog(peer, token);
+    if (!mounted || keys.isEmpty) return;
+    setState(() {
+      _remoteKeys = keys;
+      if (!_busy) {
+        _status = "O outro aparelho já tem ${keys.length} arquivos no banco. O que for igual não será enviado.";
+      }
+    });
+  }
 
   Future<void> _hearPeer() async {
     if (_hearing || _leaving || _left || _peer == null || _token == null) return;
@@ -819,6 +850,11 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
         ],
         const SizedBox(height: 12),
         Text("Modo ${modeLabel(widget.settings.mode)}. ${modeHint(widget.settings.mode)}"),
+        Text(
+          _sd == null
+              ? "Não achei cartão SD neste aparelho. Os arquivos vão para a memória interna, em pastas Imagens, Vídeos e Arquivos."
+              : "Primeiro o cartão SD (${formatBytes(_sd!.freeBytes)} livres). A memória interna só recebe o que não couber no cartão.",
+        ),
         if (room.indexLabel.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text(room.indexLabel),

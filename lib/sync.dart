@@ -39,16 +39,22 @@ class FoundPeer {
 }
 
 class Offer {
-  Offer({required this.id, required this.name, required this.bytes});
+  Offer({required this.id, required this.name, required this.bytes, this.category = "Arquivos"});
 
   final String id;
   final String name;
   final int bytes;
+  final String category;
 
-  Map<String, Object> toJson() => {"id": id, "name": name, "bytes": bytes};
+  Map<String, Object> toJson() => {"id": id, "name": name, "bytes": bytes, "category": category};
 
   factory Offer.fromJson(Map<String, dynamic> json) {
-    return Offer(id: json["id"].toString(), name: json["name"] as String, bytes: (json["bytes"] as num).toInt());
+    return Offer(
+      id: json["id"].toString(),
+      name: json["name"] as String,
+      bytes: (json["bytes"] as num).toInt(),
+      category: json["category"] as String? ?? "Arquivos",
+    );
   }
 }
 
@@ -219,6 +225,20 @@ class IncomingRoom extends ChangeNotifier {
         });
         return;
       }
+      if (request.method == "GET" && path == "/v1/catalog") {
+        final items = <Map<String, Object>>[];
+        final seen = <String>{};
+        for (final key in knownKeys) {
+          if (!seen.add(key)) continue;
+          final bar = key.lastIndexOf("|");
+          if (bar <= 0) continue;
+          final bytes = int.tryParse(key.substring(bar + 1));
+          if (bytes == null) continue;
+          items.add({"name": key.substring(0, bar), "bytes": bytes});
+        }
+        await _json(request, 200, {"count": items.length, "items": items});
+        return;
+      }
       if (request.method == "POST" && path == "/v1/present") {
         final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map<String, dynamic>;
         final have = <String>[];
@@ -281,7 +301,16 @@ class IncomingRoom extends ChangeNotifier {
           return;
         }
         current = item.name;
-        final dest = await incomingFile(Directory("$root/SincroLocal"), item.name, item.bytes);
+        final category = index < offers.length ? offers[index].category : "Arquivos";
+        final destTarget = await incomingTarget(Directory("$root/SincroLocal/${shelfFor(category)}"), item.name, item.bytes);
+        if (destTarget.alreadyThere) {
+          saved.add((name: item.name, bytes: item.bytes, dest: item.dest!.name, sourcePath: destTarget.file.path));
+          status = "Já estava em ${shelfFor(category)}/${item.name}";
+          notifyListeners();
+          await _json(request, 201, {"ok": true, "sha256": "existente"});
+          return;
+        }
+        final dest = destTarget.file;
         final hash = await writeHashed(
           source: request,
           dest: dest,
@@ -409,6 +438,18 @@ class Sender {
 
   static Future<Map<String, dynamic>> decision(FoundPeer peer, String token) async {
     return _get(peer, "/v1/decision", token);
+  }
+
+  static Future<Set<String>> catalog(FoundPeer peer, String token) async {
+    try {
+      final body = await _get(peer, "/v1/catalog", token);
+      return {
+        for (final item in body["items"] as List<dynamic>? ?? [])
+          if (item is Map) "${item["name"]}|${item["bytes"]}",
+      };
+    } catch (_) {
+      return {};
+    }
   }
 
   static Future<Set<String>> present(FoundPeer peer, String token, List<LocalFile> files) async {

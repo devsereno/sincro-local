@@ -110,7 +110,8 @@ class _CopyPageState extends State<CopyPage> {
         setState(() => _current = item.name);
         final local = _files.cast<LocalFile?>().firstWhere((file) => file?.path == item.sourcePath, orElse: () => null);
         final source = local == null ? File(item.sourcePath) : await readableFile(local);
-        final dest = await uniqueFile(Directory("$root/SincroLocal"), item.name);
+        final category = local?.category ?? categoryFor(item.sourcePath);
+        final dest = await uniqueFile(Directory("$root/SincroLocal/${shelfFor(category)}"), item.name);
         await copyHashed(
           source: source,
           dest: dest,

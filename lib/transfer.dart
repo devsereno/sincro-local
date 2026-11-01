@@ -95,17 +95,26 @@ Future<String> writeHashed({
 
 String safeName(String name) => name.replaceAll(RegExp(r'[\\/:*?"<>|]'), "_");
 
-Future<File> incomingFile(Directory dir, String name, int expected) async {
+class IncomingTarget {
+  IncomingTarget(this.file, this.alreadyThere);
+
+  final File file;
+  final bool alreadyThere;
+}
+
+Future<IncomingTarget> incomingTarget(Directory dir, String name, int expected) async {
   await dir.create(recursive: true);
   final exact = File("${dir.path}/${safeName(name)}");
   if (await exact.exists()) {
     final size = await exact.length();
+    if (size == expected) return IncomingTarget(exact, true);
     if (size < expected) {
       await exact.delete();
-      return exact;
+      return IncomingTarget(exact, false);
     }
   }
-  return uniqueFile(dir, name);
+  if (!await exact.exists()) return IncomingTarget(exact, false);
+  return IncomingTarget(await uniqueFile(dir, name), false);
 }
 
 Future<File> uniqueFile(Directory dir, String name) async {

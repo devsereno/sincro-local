@@ -40,6 +40,12 @@ class LocalFile {
   }
 }
 
+String shelfFor(String category) {
+  if (category == "Fotos") return "Imagens";
+  if (category == "Vídeos") return "Vídeos";
+  return "Arquivos";
+}
+
 const _folders = ["Download", "Documents", "WhatsApp/Media", "Telegram"];
 
 String categoryFor(String path) {
@@ -185,7 +191,7 @@ Future<List<LocalFile>> scanDocuments(List<VolumeInfo> volumes) async {
   return found;
 }
 
-Future<int> indexStorage(List<VolumeInfo> volumes, void Function(String name, int bytes) onFile) async {
+Future<int> indexStorage(List<VolumeInfo> volumes, void Function(String path, String name, int bytes) onFile) async {
   final seen = <String>{};
   var count = 0;
   for (final volume in volumes) {
@@ -200,7 +206,7 @@ Future<int> indexStorage(List<VolumeInfo> volumes, void Function(String name, in
         final size = await entity.length().catchError((_) => 0);
         if (size <= 0) continue;
         count++;
-        onFile(path.split("/").last, size);
+        onFile(path, path.split("/").last, size);
         if (count % 250 == 0) await Future<void>.delayed(Duration.zero);
       }
     } catch (_) {}
