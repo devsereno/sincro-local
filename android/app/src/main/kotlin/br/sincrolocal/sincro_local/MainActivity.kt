@@ -211,7 +211,11 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
-        return mapOf("files" to rows, "next" to offset + visited, "done" to visited < limit)
+        return mapOf(
+            "files" to rows,
+            "next" to (offset + visited),
+            "done" to (visited < limit),
+        )
     }
 
     private fun stageMedia(path: String?, uri: String?): String {
