@@ -1,5 +1,5 @@
 import "package:sqflite/sqflite.dart";
-import "package:path/join.dart" as p;
+import "package:path/path.dart" as p;
 
 class HistoryFile {
   HistoryFile({required this.name, required this.bytes, required this.dest, required this.sourcePath});
