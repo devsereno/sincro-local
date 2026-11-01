@@ -76,6 +76,7 @@ class IncomingRoom extends ChangeNotifier {
   bool pauseThere = false;
   bool keepGoing = false;
   bool ended = false;
+  bool wantClose = false;
   int? peerBattery;
   int jobBytes = 0;
   int jobDone = 0;
@@ -125,6 +126,12 @@ class IncomingRoom extends ChangeNotifier {
     saved.clear();
     totalBytes = plan.where((item) => item.dest != null).fold(0, (sum, item) => sum + item.bytes);
     status = parts > 1 ? "Recebendo parte $part de $parts" : "Recebendo arquivos";
+  }
+
+  void askToClose() {
+    wantClose = true;
+    status = "Encerrando a conexão...";
+    notifyListeners();
   }
 
   void setLocalPause(bool value) {
@@ -199,6 +206,7 @@ class IncomingRoom extends ChangeNotifier {
           "battery": level,
           "received": jobDone + receivedBytes,
           "total": jobBytes,
+          "bye": wantClose,
         });
         return;
       }
@@ -216,12 +224,14 @@ class IncomingRoom extends ChangeNotifier {
         return;
       }
       if (request.method == "POST" && path == "/v1/bye") {
+        await _json(request, 200, {"ok": true});
+        await Future<void>.delayed(const Duration(milliseconds: 200));
         ended = true;
+        wantClose = false;
         keepGoing = false;
         cancel.cancelled = true;
-        status = "O outro aparelho encerrou.";
+        status = "Conexão encerrada.";
         notifyListeners();
-        await _json(request, 200, {"ok": true});
         return;
       }
       if (request.method == "GET" && path == "/v1/pause") {
@@ -416,7 +426,7 @@ class Sender {
     void Function(int sent) onProgress,
     Future<void> Function() gate,
   ) async {
-    final client = HttpClient();
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
     try {
       final request = await client.putUrl(Uri.parse("http://${peer.address}:${peer.port}/v1/file/${offer.id}"));
       request.headers.set("authorization", "Bearer $token");
@@ -459,7 +469,7 @@ class Sender {
     Object body,
     String? token,
   ) async {
-    final client = HttpClient();
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
     try {
       final request = await client.postUrl(Uri.parse("http://${peer.address}:${peer.port}$path"));
       if (token != null) request.headers.set("authorization", "Bearer $token");
@@ -476,7 +486,7 @@ class Sender {
   }
 
   static Future<Map<String, dynamic>> _get(FoundPeer peer, String path, String token) async {
-    final client = HttpClient();
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
     try {
       final request = await client.getUrl(Uri.parse("http://${peer.address}:${peer.port}$path"));
       request.headers.set("authorization", "Bearer $token");

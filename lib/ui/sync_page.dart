@@ -59,6 +59,8 @@ class _SyncPageState extends State<SyncPage> {
   String _peerLabel = "";
   LastTransfer? _resume;
   bool _goHome = false;
+  bool _leaving = false;
+  bool _left = false;
   Timer? _poll;
 
   VolumeInfo? get _internal => _volumes.where((item) => !item.removable).cast<VolumeInfo?>().firstOrNull;
@@ -111,7 +113,6 @@ class _SyncPageState extends State<SyncPage> {
     room.addListener(() {
       if (!mounted) return;
       if (room.ended) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("O outro aparelho encerrou.")));
         _backToStart();
         return;
       }
@@ -213,6 +214,8 @@ class _SyncPageState extends State<SyncPage> {
         _status = "Buscando os primeiros arquivos...";
       }
     });
+    _poll?.cancel();
+    _poll = Timer.periodic(const Duration(milliseconds: 500), (_) => _hearPeer());
     var access = await DeviceBridge.mediaAccess();
     if (access != "all") access = await DeviceBridge.requestMediaAccess() ? await DeviceBridge.mediaAccess() : access;
     if (!mounted || _token != token) return;
@@ -362,24 +365,6 @@ class _SyncPageState extends State<SyncPage> {
     });
     await DeviceBridge.hold();
     await WakelockPlus.enable();
-    _poll?.cancel();
-    _poll = Timer.periodic(const Duration(seconds: 2), (_) async {
-      if (_stop || _peer == null || _token == null) return;
-      try {
-        final state = await Sender.pulse(_peer!, _token!, await _level());
-        if (!mounted) return;
-        final remote = state["battery"];
-        final got = state["received"];
-        setState(() {
-          _pauseThere = state["here"] == true;
-          if (remote is num && remote >= 0) _otherNow = remote.toInt();
-          if ((_pauseHere || _pauseThere) && got is num && _total > 0) {
-            final value = got.toInt();
-            if (value >= 0 && value <= _total) _sent = value;
-          }
-        });
-      } catch (_) {}
-    });
     try {
       await ResumeStore.saveSession(LastTransfer(peer: _peerLabel, files: picked, done: doneKeys));
       var jobDone = 0;
@@ -496,25 +481,27 @@ class _SyncPageState extends State<SyncPage> {
         }
       }
     } catch (error) {
+      if (_leaving || _left) return;
       final text = error.toString();
       final remoteClosed = text.contains("Connection refused") ||
+          text.contains("Connection reset") ||
+          text.contains("Connection closed") ||
+          text.contains("Broken pipe") ||
           text.contains("errno = 111") ||
-          text.contains("SocketException") ||
-          text.contains("encerrou");
+          text.contains("errno = 104") ||
+          text.contains("SocketException");
       if (remoteClosed) {
         _goHome = true;
       } else if (mounted) {
         setState(() => _status = _plainError(error));
       }
     } finally {
-      _poll?.cancel();
       await WakelockPlus.disable();
       await DeviceBridge.release();
       if (_goHome && mounted) {
         _goHome = false;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("O outro aparelho encerrou. Voltando ao início.")));
         _backToStart();
-      } else if (mounted) {
+      } else if (mounted && !_left) {
         setState(() => _busy = false);
       }
     }
@@ -538,6 +525,45 @@ class _SyncPageState extends State<SyncPage> {
     } catch (_) {}
   }
 
+  bool _hearing = false;
+
+  Future<void> _hearPeer() async {
+    if (_hearing || _leaving || _left || _peer == null || _token == null) return;
+    _hearing = true;
+    try {
+      final state = await Sender.pulse(_peer!, _token!, await _level());
+      if (!mounted || _left) return;
+      final remote = state["battery"];
+      final got = state["received"];
+      setState(() {
+        _pauseThere = state["here"] == true;
+        if (remote is num && remote >= 0) _otherNow = remote.toInt();
+        if ((_pauseHere || _pauseThere) && got is num && _total > 0) {
+          final value = got.toInt();
+          if (value >= 0 && value <= _total) _sent = value;
+        }
+      });
+      if (state["bye"] == true) await _agreeToClose();
+    } catch (_) {
+    } finally {
+      _hearing = false;
+    }
+  }
+
+  Future<void> _agreeToClose() async {
+    if (_leaving || _left) return;
+    _leaving = true;
+    _stop = true;
+    final peer = _peer;
+    final token = _token;
+    if (peer != null && token != null) {
+      try {
+        await Sender.bye(peer, token);
+      } catch (_) {}
+    }
+    _backToStart();
+  }
+
   Future<void> _end() async {
     final room = _room;
     final transferring = _busy || (room != null && room.decided && !room.finished);
@@ -558,21 +584,27 @@ class _SyncPageState extends State<SyncPage> {
       if (leave != true) return;
     }
     _stop = true;
+    _leaving = true;
     final peer = _peer;
     final token = _token;
+    if (room != null) room.askToClose();
     if (peer != null && token != null) {
       try {
         await Sender.bye(peer, token);
       } catch (_) {}
     }
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Conexão encerrada nos dois aparelhos.")));
+    if (room != null && !room.ended) {
+      final deadline = DateTime.now().add(const Duration(seconds: 4));
+      while (!room.ended && DateTime.now().isBefore(deadline) && mounted) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
     }
     _backToStart();
   }
 
   void _backToStart() {
-    if (!mounted) return;
+    if (!mounted || _left) return;
+    _left = true;
     _stop = true;
     _poll?.cancel();
     final room = _room;
