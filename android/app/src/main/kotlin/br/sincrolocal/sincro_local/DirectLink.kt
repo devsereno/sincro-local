@@ -48,7 +48,6 @@ class DirectLink(private val activity: MainActivity) {
                     message = if (info?.groupFormed == true) "Rede direta formada" else "Aguardando a rede direta"
                     readGroup()
                 }
-                }
             }
         }
     }
