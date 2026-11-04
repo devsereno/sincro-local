@@ -105,7 +105,7 @@ class IncomingRoom extends ChangeNotifier {
   }
   final CancelFlag cancel = CancelFlag();
 
-  Future<void> start(List<Placement> Function(List<Offer> offers) buildPlan, {required String internalPath, String? sdPath}) async {
+  Future<void> start(List<Placement> Function(List<Offer> offers) buildPlan, {required String internalPath, String? sdPath, bool announce = true}) async {
     _buildPlan = buildPlan;
     _internalPath = internalPath;
     _sdPath = sdPath;
@@ -120,11 +120,20 @@ class IncomingRoom extends ChangeNotifier {
     }
     tcpPort = _tcp!.port;
     _tcp!.listen((socket) => unawaited(_serveChunks(socket)), onError: (Object _) {});
-    _beacon = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-    _beacon!.broadcastEnabled = true;
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _announce());
-    _announce();
+    if (announce) {
+      _beacon = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      _beacon!.broadcastEnabled = true;
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) => _announce());
+      _announce();
+    }
     notifyListeners();
+  }
+
+  void stopAnnounce() {
+    _timer?.cancel();
+    _timer = null;
+    _beacon?.close();
+    _beacon = null;
   }
 
   List<Placement> Function(List<Offer> offers) _buildPlan = (offers) => [];

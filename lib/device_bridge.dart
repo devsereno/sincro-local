@@ -160,7 +160,11 @@ class DeviceBridge {
     }
   }
 
-  static Future<Map<String, dynamic>> p2pStatus() async {
+  static Future<void> p2pStop() async {
+    try {
+      await _channel.invokeMethod("p2pStop");
+    } catch (_) {}
+  }
     try {
       final raw = await _channel.invokeMethod<dynamic>("p2pStatus");
       if (raw is Map) return raw.map((key, value) => MapEntry(key.toString(), value));

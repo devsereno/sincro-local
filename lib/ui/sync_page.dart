@@ -32,6 +32,7 @@ class SyncPage extends StatefulWidget {
 
 class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
   String? _role;
+  String? _link; // "casa" or "direta"
   IncomingRoom? _room;
   List<VolumeInfo> _volumes = [];
   List<FoundPeer> _peers = [];
@@ -114,7 +115,17 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _receive() async {
+  Future<void> _receive({required bool direct}) async {
+    await DeviceBridge.p2pStop();
+    if (direct) {
+      final ok = await DeviceBridge.p2pName(_name.text.trim().isEmpty ? "Sincro" : _name.text.trim());
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Permita aparelhos próximos e toque de novo em Receber.")),
+        );
+        return;
+      }
+    }
     final allowed = await DeviceBridge.hasAllFilesAccess();
     if (!allowed) {
       await DeviceBridge.requestAllFilesAccess();
@@ -139,7 +150,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
         internalBufferGb: widget.settings.internalBufferGb,
         sdBufferMb: widget.settings.sdBufferMb,
       );
-    }, internalPath: _internal?.path ?? "/storage/emulated/0", sdPath: _sd?.path);
+    }, internalPath: _internal?.path ?? "/storage/emulated/0", sdPath: _sd?.path, announce: !direct);
     room.addListener(() {
       if (!mounted) return;
       if (room.ended) {
@@ -152,10 +163,15 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     await DeviceBridge.hold();
     await WakelockPlus.enable();
     setState(() {
+      _link = direct ? "direta" : "casa";
       _role = "receive";
       _room = room;
+      _direct = "";
+      _directSsid = "";
+      _directPass = "";
     });
     _indexRoom(room);
+    if (direct) await _ownDirect();
   }
 
   Future<void> _indexRoom(IncomingRoom room) async {
@@ -251,15 +267,18 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
   }
 
   String _qrLink(IncomingRoom room) {
+    if (_link == "direta") {
+      if (_directSsid.isEmpty || room.ip == null || !room.ip!.startsWith("192.168.49.")) return "";
+    }
     if (room.ip == null || room.ip!.isEmpty) return "";
     return Uri(
       scheme: "sincro",
       host: room.ip,
       port: room.port,
       queryParameters: {
-        if (_directSsid.isNotEmpty) "s": _directSsid,
-        if (_directPass.isNotEmpty) "k": _directPass,
-        if (_name.text.trim().isNotEmpty) "n": _name.text.trim(),
+        if (_link == "direta" && _directSsid.isNotEmpty) "s": _directSsid,
+        if (_link == "direta" && _directPass.isNotEmpty) "k": _directPass,
+        if (_link == "direta" && _name.text.trim().isNotEmpty) "n": _name.text.trim(),
       },
     ).toString();
   }
@@ -302,7 +321,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     });
     final ssid = uri.queryParameters["s"];
     final pass = uri.queryParameters["k"];
-    if (ssid != null && pass != null && ssid.isNotEmpty && pass.isNotEmpty) {
+    if (_link == "direta" && ssid != null && pass != null && ssid.isNotEmpty && pass.isNotEmpty) {
       await _enterDirect(ssid, pass, uri.queryParameters["n"] ?? "o outro aparelho");
     }
   }
@@ -839,8 +858,10 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     room?.close();
     WakelockPlus.disable();
     DeviceBridge.release();
+    if (_link == "direta") DeviceBridge.p2pStop();
     setState(() {
       _role = null;
+      _link = null;
       _peer = null;
       _token = null;
       _busy = false;
@@ -889,22 +910,40 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
             ? Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text("Os dois aparelhos precisam estar na mesma rede Wi-Fi."),
+                  const Text("Escolha uma forma de ligar os aparelhos. Só uma fica ativa por vez."),
                   const SizedBox(height: 16),
                   FilledButton.icon(
-                    onPressed: _receive,
-                    icon: const Icon(Icons.qr_code_2),
-                    label: const Text("Receber neste aparelho"),
+                    onPressed: () => setState(() => _link = "casa"),
+                    icon: const Icon(Icons.wifi),
+                    label: const Text("Wi-Fi de casa"),
                   ),
                   const SizedBox(height: 8),
                   OutlinedButton.icon(
-                    onPressed: () {
-                      setState(() => _role = "send");
-                      _scanPeers();
-                    },
-                    icon: const Icon(Icons.photo_camera_outlined),
-                    label: const Text("Enviar para o outro"),
+                    onPressed: () => setState(() => _link = "direta"),
+                    icon: const Icon(Icons.wifi_tethering),
+                    label: const Text("Rede direta"),
                   ),
+                  if (_link != null) ...[
+                    const SizedBox(height: 20),
+                    Text(_link == "casa"
+                        ? "Os dois no mesmo Wi-Fi do roteador. O radar acha o outro aparelho."
+                        : "Sem roteador. O aparelho que recebe cria a rede e mostra o QR. O outro lê e aceita uma vez."),
+                    const SizedBox(height: 12),
+                    FilledButton.icon(
+                      onPressed: () => _receive(direct: _link == "direta"),
+                      icon: const Icon(Icons.qr_code_2),
+                      label: const Text("Receber neste aparelho"),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        setState(() => _role = "send");
+                        if (_link == "casa") _scanPeers();
+                      },
+                      icon: const Icon(Icons.photo_camera_outlined),
+                      label: const Text("Enviar para o outro"),
+                    ),
+                  ],
                 ],
               )
             : room != null
@@ -955,6 +994,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
         Text(room.code, style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w800, letterSpacing: 8)),
         if (link.isNotEmpty) ...[
           const SizedBox(height: 8),
+          Text(_link == "direta" ? "QR da rede direta" : "QR do Wi-Fi de casa", textAlign: TextAlign.center),
           Center(child: QrImageView(data: link, size: 160, backgroundColor: Colors.white)),
           Text(link, textAlign: TextAlign.center),
         ],
@@ -966,17 +1006,19 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
               : "Primeiro o cartão SD (${formatBytes(_sd!.freeBytes)} livres). A memória interna só recebe o que não couber no cartão.",
         ),
         if (_direct.isNotEmpty) Text(_direct),
-        const SizedBox(height: 8),
-        TextField(
-          controller: _name,
-          decoration: const InputDecoration(labelText: "Nome deste aparelho na rede direta"),
-        ),
-        const SizedBox(height: 8),
-        OutlinedButton.icon(
-          onPressed: _ownDirect,
-          icon: const Icon(Icons.wifi_tethering),
-          label: const Text("Criar rede direta"),
-        ),
+        if (_link == "direta") ...[
+          const SizedBox(height: 8),
+          TextField(
+            controller: _name,
+            decoration: const InputDecoration(labelText: "Nome deste aparelho na rede direta"),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _ownDirect,
+            icon: const Icon(Icons.wifi_tethering),
+            label: const Text("Criar rede direta"),
+          ),
+        ],
         if (room.indexLabel.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text(room.indexLabel),
@@ -1001,33 +1043,37 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     if (_token == null) {
       return ListView(
         children: [
-          const Text("No aparelho que recebe, escolha um nome, crie a rede direta e mostre o QR. Aqui só leia esse QR e aceite a rede uma vez."),
+          Text(_link == "direta"
+              ? "No aparelho que recebe, crie a rede direta e mostre o QR. Aqui só leia esse QR e aceite uma vez."
+              : "Os dois no mesmo Wi-Fi. Aponte a câmera para o QR ou toque no aparelho da lista."),
           const SizedBox(height: 12),
           if (_direct.isNotEmpty) Text(_direct),
           const SizedBox(height: 8),
           FilledButton(onPressed: _busy ? null : _openCamera, child: const Text("Abrir câmera e ler o QR")),
-          const SizedBox(height: 16),
-          if (_looking) const LinearProgressIndicator(),
-          for (final peer in _peers)
-            ListTile(
-              title: Text(peer.name),
-              subtitle: Text("${peer.address}:${peer.port}"),
-              onTap: () => _choosePeer(peer),
+          if (_link == "casa") ...[
+            const SizedBox(height: 16),
+            if (_looking) const LinearProgressIndicator(),
+            for (final peer in _peers)
+              ListTile(
+                title: Text(peer.name),
+                subtitle: Text("${peer.address}:${peer.port}"),
+                onTap: () => _choosePeer(peer),
+              ),
+            TextField(
+              controller: _manual,
+              decoration: const InputDecoration(labelText: "Se o radar falhar: IP:porta"),
             ),
-          TextField(
-            controller: _manual,
-            decoration: const InputDecoration(labelText: "Se o radar falhar: IP:porta"),
-          ),
-          const SizedBox(height: 8),
-          OutlinedButton(
-            onPressed: () {
-              final parts = _manual.text.split(":");
-              final port = parts.length == 2 ? int.tryParse(parts[1]) : null;
-              if (port == null) return;
-              _choosePeer(FoundPeer(name: "o outro aparelho", address: parts[0], port: port));
-            },
-            child: const Text("Usar este endereço"),
-          ),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              onPressed: () {
+                final parts = _manual.text.split(":");
+                final port = parts.length == 2 ? int.tryParse(parts[1]) : null;
+                if (port == null) return;
+                _choosePeer(FoundPeer(name: "o outro aparelho", address: parts[0], port: port));
+              },
+              child: const Text("Usar este endereço"),
+            ),
+          ],
           if (_peer != null) ...[
             const SizedBox(height: 16),
             Text("Digite o código de 3 caracteres que está na tela de ${_peer!.name}."),
