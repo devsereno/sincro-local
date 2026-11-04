@@ -276,6 +276,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
       host: room.ip,
       port: room.port,
       queryParameters: {
+        "c": room.code,
         if (_link == "direta" && _directSsid.isNotEmpty) "s": _directSsid,
         if (_link == "direta" && _directPass.isNotEmpty) "k": _directPass,
         if (_link == "direta" && _name.text.trim().isNotEmpty) "n": _name.text.trim(),
@@ -323,6 +324,10 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
     final pass = uri.queryParameters["k"];
     if (_link == "direta" && ssid != null && pass != null && ssid.isNotEmpty && pass.isNotEmpty) {
       await _enterDirect(ssid, pass, uri.queryParameters["n"] ?? "o outro aparelho");
+    }
+    final code = uri.queryParameters["c"];
+    if (code != null && code.isNotEmpty) {
+      await _submitCode(code);
     }
   }
 
@@ -926,8 +931,8 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
                   if (_link != null) ...[
                     const SizedBox(height: 20),
                     Text(_link == "casa"
-                        ? "Os dois no mesmo Wi-Fi do roteador. O radar acha o outro aparelho."
-                        : "Sem roteador. O aparelho que recebe cria a rede e mostra o QR. O outro lê e aceita uma vez."),
+                        ? "Os dois no mesmo Wi-Fi. Quem recebe mostra o QR. Quem envia lê e já entra."
+                        : "O celular cria a rede e mostra o QR. O tablet lê, aceita a rede uma vez e só recebe."),
                     const SizedBox(height: 12),
                     FilledButton.icon(
                       onPressed: () => _receive(direct: _link == "direta"),
@@ -990,13 +995,11 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
       children: [
         Text(room.status, style: const TextStyle(fontWeight: FontWeight.w800)),
         const SizedBox(height: 12),
-        Text("Código deste aparelho", style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-        Text(room.code, style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w800, letterSpacing: 8)),
         if (link.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text(_link == "direta" ? "QR da rede direta" : "QR do Wi-Fi de casa", textAlign: TextAlign.center),
           Center(child: QrImageView(data: link, size: 160, backgroundColor: Colors.white)),
-          Text(link, textAlign: TextAlign.center),
+          Text("O outro lê este QR e já entra. Não precisa digitar código.", textAlign: TextAlign.center),
         ],
         const SizedBox(height: 12),
         Text("Modo ${modeLabel(widget.settings.mode)}. ${modeHint(widget.settings.mode)}"),
@@ -1074,19 +1077,19 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
               child: const Text("Usar este endereço"),
             ),
           ],
-          if (_peer != null) ...[
+          if (_peer != null && _token == null) ...[
             const SizedBox(height: 16),
-            Text("Digite o código de 3 caracteres que está na tela de ${_peer!.name}."),
+            Text("Lendo o QR já conecta. Se preferir, digite o código de 3 letras."),
             TextField(
               controller: _code,
               textCapitalization: TextCapitalization.characters,
               maxLength: 3,
               onChanged: (_) => setState(() {}),
-              decoration: const InputDecoration(labelText: "Código"),
+              decoration: const InputDecoration(labelText: "Código (opcional)"),
             ),
             FilledButton(
               onPressed: _busy || _code.text.trim().length < 3 ? null : () => _submitCode(_code.text.trim().toUpperCase()),
-              child: Text(_busy ? "Conferindo..." : "Parear"),
+              child: Text(_busy ? "Conectando..." : "Conectar"),
             ),
             if (_busy) const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),
           ],
