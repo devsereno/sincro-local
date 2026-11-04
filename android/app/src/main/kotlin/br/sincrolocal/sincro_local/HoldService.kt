@@ -26,8 +26,9 @@ class HoldService : Service() {
             Notification.Builder(this)
         }
             .setContentTitle("SincroLocal")
-            .setContentText("Transferência em andamento")
+            .setContentText(intent?.getStringExtra("text") ?: "Transferência em andamento")
             .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setOngoing(true)
             .build()
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(7, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)

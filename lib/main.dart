@@ -4,9 +4,9 @@ import "device_bridge.dart";
 import "history_store.dart";
 import "settings_store.dart";
 import "ui/brand_mark.dart";
-import "ui/card_page.dart";
 import "ui/copy_page.dart";
 import "ui/history_page.dart";
+import "ui/originals_page.dart";
 import "ui/settings_page.dart";
 import "ui/splash_page.dart";
 import "ui/sync_page.dart";
@@ -117,14 +117,6 @@ class HomePage extends StatelessWidget {
             },
           ),
           _Action(
-            icon: Icons.folder_open,
-            title: "O que está no cartão",
-            subtitle: "Ver e apagar o que já foi copiado para o cartão ou a interna.",
-            onTap: () {
-              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CardPage()));
-            },
-          ),
-          _Action(
             icon: Icons.sync_alt,
             title: "Sincronizar com o outro aparelho",
             subtitle: "Quem recebe escolhe o destino e a reserva.",
@@ -135,9 +127,17 @@ class HomePage extends StatelessWidget {
             },
           ),
           _Action(
+            icon: Icons.delete_outline,
+            title: "Apagar originais",
+            subtitle: "Só o que já foi confirmado 100%. Um a um ou tudo.",
+            onTap: () {
+              Navigator.of(context).push(MaterialPageRoute(builder: (_) => OriginalsPage(history: history)));
+            },
+          ),
+          _Action(
             icon: Icons.history,
             title: "Histórico",
-            subtitle: "Sessões verificadas. Dá para apagar os originais depois.",
+            subtitle: "Transferências concluídas ou interrompidas.",
             onTap: () {
               Navigator.of(context).push(MaterialPageRoute(builder: (_) => HistoryPage(history: history)));
             },
