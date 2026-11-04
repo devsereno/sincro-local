@@ -932,21 +932,33 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
                     const SizedBox(height: 20),
                     Text(_link == "casa"
                         ? "Os dois no mesmo Wi-Fi. Quem recebe mostra o QR. Quem envia lê e já entra."
-                        : "O celular cria a rede e mostra o QR. O tablet lê, aceita a rede uma vez e só recebe."),
+                        : "Quem envia cria a rede e mostra o QR. Quem recebe só lê o QR e entra."),
                     const SizedBox(height: 12),
                     FilledButton.icon(
-                      onPressed: () => _receive(direct: _link == "direta"),
-                      icon: const Icon(Icons.qr_code_2),
-                      label: const Text("Receber neste aparelho"),
+                      onPressed: () {
+                        if (_link == "direta") {
+                          setState(() => _role = "send");
+                          _ownDirect();
+                        } else {
+                          _receive(direct: false);
+                        }
+                      },
+                      icon: Icon(_link == "direta" ? Icons.qr_code_2 : Icons.qr_code_2),
+                      label: Text(_link == "direta" ? "Criar rede e mostrar QR" : "Receber neste aparelho"),
                     ),
                     const SizedBox(height: 8),
                     OutlinedButton.icon(
                       onPressed: () {
-                        setState(() => _role = "send");
-                        if (_link == "casa") _scanPeers();
+                        if (_link == "direta") {
+                          setState(() => _role = "receive");
+                          _openCamera();
+                        } else {
+                          setState(() => _role = "send");
+                          _scanPeers();
+                        }
                       },
-                      icon: const Icon(Icons.photo_camera_outlined),
-                      label: const Text("Enviar para o outro"),
+                      icon: Icon(_link == "direta" ? Icons.photo_camera_outlined : Icons.photo_camera_outlined),
+                      label: Text(_link == "direta" ? "Ler o QR e receber" : "Enviar para o outro"),
                     ),
                   ],
                 ],
@@ -1044,15 +1056,31 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
 
   Widget _sendBody() {
     if (_token == null) {
+      final directQr = _link == "direta" && _directSsid.isNotEmpty && _directPass.isNotEmpty
+          ? Uri(
+              scheme: "sincro",
+              host: "0.0.0.0",
+              port: 0,
+              queryParameters: {"s": _directSsid, "k": _directPass, "n": _name.text.trim().isEmpty ? "Sincro" : _name.text.trim()},
+            ).toString()
+          : "";
       return ListView(
         children: [
           Text(_link == "direta"
-              ? "No aparelho que recebe, crie a rede direta e mostre o QR. Aqui só leia esse QR e aceite uma vez."
+              ? "Este aparelho cria a rede e mostra o QR. O outro só lê e entra para receber."
               : "Os dois no mesmo Wi-Fi. Aponte a câmera para o QR ou toque no aparelho da lista."),
           const SizedBox(height: 12),
           if (_direct.isNotEmpty) Text(_direct),
-          const SizedBox(height: 8),
-          FilledButton(onPressed: _busy ? null : _openCamera, child: const Text("Abrir câmera e ler o QR")),
+          if (_link == "direta" && directQr.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            const Text("QR da rede", textAlign: TextAlign.center),
+            Center(child: QrImageView(data: directQr, size: 180, backgroundColor: Colors.white)),
+            const Text("O outro lê este QR, aceita a rede uma vez e começa a receber.", textAlign: TextAlign.center),
+          ],
+          if (_link != "direta") ...[
+            const SizedBox(height: 8),
+            FilledButton(onPressed: _busy ? null : _openCamera, child: const Text("Abrir câmera e ler o QR")),
+          ],
           if (_link == "casa") ...[
             const SizedBox(height: 16),
             if (_looking) const LinearProgressIndicator(),
