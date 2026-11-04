@@ -169,6 +169,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
       _direct = "";
       _directSsid = "";
       _directPass = "";
+      _directIp = "";
     });
     _indexRoom(room);
     if (direct) await _ownDirect();
@@ -231,6 +232,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
   String _direct = "";
   String _directSsid = "";
   String _directPass = "";
+  String _directIp = "";
   final _name = TextEditingController();
 
   Future<void> _ownDirect() async {
@@ -250,18 +252,19 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
       final ssid = status["ssid"]?.toString() ?? "";
       final pass = status["passphrase"]?.toString() ?? "";
       if (!mounted) return;
-      if (ip != null && ip.isNotEmpty && ip != "null") {
+      if (ip != null && ip.isNotEmpty && ip != "null" && ip != "0.0.0.0") {
         _room?.showAddress(ip);
         setState(() {
           _directSsid = ssid;
           _directPass = pass;
+          _directIp = ip;
           _direct = ssid.isEmpty
-              ? "Rede de $name criada. Esperando a senha do Wi-Fi Direct..."
-              : "Rede de $name pronta. Mostre este QR. O outro aceita uma vez só.";
+              ? "Rede criada. Esperando a senha..."
+              : "Rede pronta. Mostre este QR. O outro aceita uma vez só.";
         });
         if (ssid.isNotEmpty && pass.isNotEmpty) return;
       } else {
-        setState(() => _direct = status["message"]?.toString() ?? "Criando a rede de $name...");
+        setState(() => _direct = status["message"]?.toString() ?? "Criando a rede...");
       }
     }
   }
@@ -1056,11 +1059,11 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
 
   Widget _sendBody() {
     if (_token == null) {
-      final directQr = _link == "direta" && _directSsid.isNotEmpty && _directPass.isNotEmpty
+      final directQr = _link == "direta" && _directSsid.isNotEmpty && _directPass.isNotEmpty && _directIp.isNotEmpty && _directIp != "0.0.0.0"
           ? Uri(
               scheme: "sincro",
-              host: "0.0.0.0",
-              port: 0,
+              host: _directIp,
+              port: 45921,
               queryParameters: {"s": _directSsid, "k": _directPass, "n": _name.text.trim().isEmpty ? "Sincro" : _name.text.trim()},
             ).toString()
           : "";

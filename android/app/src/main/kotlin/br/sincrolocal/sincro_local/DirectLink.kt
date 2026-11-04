@@ -10,8 +10,10 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
-import android.net.wifi.WifiNetworkSpecifier
-import android.net.wifi.p2p.WifiP2pDevice
+import android.net.wifi.WifiManager
+import android.os.Handler
+import android.os.Looper
+import android.net.wifi.WifiConfiguration
 import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
@@ -28,6 +30,8 @@ class DirectLink(private val activity: MainActivity) {
     private var passphrase: String? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var message = "Wi-Fi Direct parado"
+    private var hotspotReservation: WifiManager.LocalOnlyHotspotReservation? = null
+    private var hotspotIp: String? = null
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -108,6 +112,10 @@ class DirectLink(private val activity: MainActivity) {
     }
 
     fun own() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            startHotspot()
+            return
+        }
         ensure()
         val ch = channel ?: return
         message = "Criando a rede direta..."
@@ -121,6 +129,54 @@ class DirectLink(private val activity: MainActivity) {
                 message = "Não consegui criar a rede direta ($reason)"
             }
         })
+    }
+
+    @Suppress("DEPRECATION")
+    private fun startHotspot() {
+        if (Build.VERSION.SDK_INT < 26) return
+        message = "Criando a rede..."
+        val wifi = activity.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        try {
+            wifi.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
+                override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation) {
+                    hotspotReservation = reservation
+                    val config = reservation.wifiConfiguration
+                    ssid = config?.SSID?.removeSurrounding("\"")
+                    passphrase = config?.preSharedKey?.removeSurrounding("\"")
+                    message = "Rede criada. Pegando o IP..."
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        hotspotIp = hotspotAddress()
+                        message = if (hotspotIp != null) "Rede pronta. Mostre o QR." else "Rede criada, mas o IP ainda não apareceu."
+                    }, 1500)
+                }
+                override fun onFailed(reason: Int) {
+                    message = "Não consegui criar a rede ($reason)"
+                }
+                override fun onStopped() {
+                    message = "Rede parada"
+                    hotspotReservation = null
+                    hotspotIp = null
+                }
+            }, Handler(Looper.getMainLooper()))
+        } catch (error: Exception) {
+            message = "Este aparelho não criou a rede: ${error.message}"
+        }
+    }
+
+    private fun hotspotAddress(): String? {
+        val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
+        for (iface in interfaces) {
+            val name = iface.name ?: continue
+            if (name.startsWith("wlan") || name.startsWith("ap") || name.startsWith("swlan")) {
+                for (addr in iface.inetAddresses) {
+                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                        val host = addr.hostAddress ?: continue
+                        if (host.startsWith("192.168.")) return host
+                    }
+                }
+            }
+        }
+        return null
     }
 
     fun find() {
@@ -177,6 +233,9 @@ class DirectLink(private val activity: MainActivity) {
     }
 
     fun stop() {
+        hotspotReservation?.close()
+        hotspotReservation = null
+        hotspotIp = null
         val connectivity = activity.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         networkCallback?.let {
             try {
@@ -195,18 +254,18 @@ class DirectLink(private val activity: MainActivity) {
         ssid = null
         passphrase = null
         peers.clear()
-        message = "Wi-Fi Direct parado"
+        message = "Rede parada"
     }
 
     fun status(): Map<String, Any?> {
         readGroup()
         val owner = info?.groupOwnerAddress?.hostAddress
-        val mine = p2pAddress() ?: if (info?.isGroupOwner == true) owner else null
+        val mine = hotspotIp ?: p2pAddress() ?: if (info?.isGroupOwner == true) owner else null
         return mapOf(
             "message" to message,
-            "groupFormed" to (info?.groupFormed == true),
-            "isOwner" to (info?.isGroupOwner == true),
-            "ownerIp" to owner,
+            "groupFormed" to (hotspotIp != null || info?.groupFormed == true),
+            "isOwner" to (hotspotIp != null || info?.isGroupOwner == true),
+            "ownerIp" to (hotspotIp ?: owner),
             "ip" to mine,
             "ssid" to ssid,
             "passphrase" to passphrase,
