@@ -25,6 +25,7 @@ class MainActivity : FlutterActivity() {
     private var pendingDirect: MethodChannel.Result? = null
     private var pendingDirectAction: (() -> Unit)? = null
     private val direct by lazy { DirectLink(this) }
+    private val blue by lazy { BlueLink(this) }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -98,11 +99,29 @@ class MainActivity : FlutterActivity() {
                     "p2pJoinNet" -> {
                         val ssid = call.argument<String>("ssid") ?: ""
                         val pass = call.argument<String>("pass") ?: ""
-                        startDirect(result) { direct.joinNetwork(ssid, pass) }
+                        direct.joinNetwork(ssid, pass)
+                        result.success(true)
                     }
                     "p2pStop" -> {
                         direct.stop()
-                        result.success(direct.status())
+                        blue.stop()
+                        result.success(null)
+                    }
+                    "blueListen" -> {
+                        val payload = call.argument<String>("payload") ?: ""
+                        blue.listen(payload)
+                        result.success(true)
+                    }
+                    "blueFetch" -> {
+                        Thread {
+                            val text = blue.fetch()
+                            runOnUiThread { result.success(text) }
+                        }.start()
+                    }
+                    "blueStatus" -> result.success(blue.message)
+                    "blueStop" -> {
+                        blue.stop()
+                        result.success(null)
                     }
                     else -> result.notImplemented()
                 }

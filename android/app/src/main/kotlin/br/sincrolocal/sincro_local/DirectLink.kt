@@ -148,8 +148,15 @@ class DirectLink(private val activity: MainActivity) {
                     message = "Rede criada. Pegando o IP..."
                     Handler(Looper.getMainLooper()).postDelayed({
                         hotspotIp = hotspotAddress()
-                        message = if (hotspotIp != null) "Rede pronta. Mostre o QR." else "Rede criada, mas o IP ainda não apareceu."
-                    }, 1500)
+                        if (hotspotIp == null) {
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                hotspotIp = hotspotAddress()
+                                message = if (hotspotIp != null) "Rede pronta. Mostre o QR." else "Rede criada. Se o QR não aparecer, toque em Encerrar e tente de novo."
+                            }, 3000)
+                        } else {
+                            message = "Rede pronta. Mostre o QR."
+                        }
+                    }, 2000)
                 }
                 override fun onFailed(reason: Int) {
                     message = "Não consegui criar a rede ($reason)"
@@ -173,9 +180,10 @@ class DirectLink(private val activity: MainActivity) {
             for (addr in iface.inetAddresses) {
                 if (addr !is Inet4Address || addr.isLoopbackAddress) continue
                 val host = addr.hostAddress ?: continue
+                if (!host.startsWith("192.168.")) continue
                 if (host.startsWith("192.168.43.")) return host
-                if (name.startsWith("ap") || name.startsWith("swlan") || name.startsWith("wlan1")) {
-                    if (host.startsWith("192.168.")) fallback = host
+                if (name.startsWith("ap") || name.startsWith("swlan") || name.startsWith("wlan1") || name.startsWith("wlan")) {
+                    fallback = host
                 }
             }
         }

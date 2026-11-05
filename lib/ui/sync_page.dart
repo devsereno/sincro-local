@@ -263,7 +263,11 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
               ? "Rede criada. Esperando a senha..."
               : "Rede pronta. Mostre este QR. O outro aceita uma vez só.";
         });
-        if (ssid.isNotEmpty && pass.isNotEmpty) return;
+        if (ssid.isNotEmpty && pass.isNotEmpty) {
+          final payload = "$ssid|$pass|$_directCode";
+          await DeviceBridge.blueListen(payload);
+          return;
+        }
       } else {
         setState(() => _direct = status["message"]?.toString() ?? "Criando a rede...");
       }
@@ -286,6 +290,33 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
         if (_link == "direta" && _name.text.trim().isNotEmpty) "n": _name.text.trim(),
       },
     ).toString();
+  }
+
+  Future<void> _blueReceive() async {
+    setState(() => _direct = "Procurando o outro pelo Bluetooth...");
+    final raw = await DeviceBridge.blueFetch();
+    if (!mounted) return;
+    if (raw == null || !raw.contains("|")) {
+      setState(() => _direct = DeviceBridge.blueStatus().toString());
+      return;
+    }
+    final parts = raw.split("|");
+    if (parts.length < 2) return;
+    final ssid = parts[0];
+    final pass = parts[1];
+    setState(() => _direct = "Entrando na rede $ssid...");
+    await DeviceBridge.p2pJoinNet(ssid, pass);
+    for (var i = 0; i < 20; i++) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      final status = await DeviceBridge.p2pStatus();
+      if (!mounted) return;
+      final message = status["message"]?.toString() ?? "";
+      if (message.startsWith("Conectado")) {
+        setState(() => _direct = "Ligado. Esperando os arquivos.");
+        return;
+      }
+      setState(() => _direct = message.isEmpty ? "Entrando..." : message);
+    }
   }
 
   Future<void> _enterDirect(String ssid, String pass, String label) async {
@@ -936,7 +967,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
                     const SizedBox(height: 20),
                     Text(_link == "casa"
                         ? "Os dois no mesmo Wi-Fi. Quem recebe mostra o QR. Quem envia lê e já entra."
-                        : "Quem envia cria a rede e mostra o QR. Quem recebe só lê o QR e entra."),
+                        : "Quem envia cria a rede. O Bluetooth passa a senha. Quem recebe entra sozinho."),
                     const SizedBox(height: 12),
                     FilledButton.icon(
                       onPressed: () {
@@ -947,22 +978,22 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
                           _receive(direct: false);
                         }
                       },
-                      icon: Icon(_link == "direta" ? Icons.qr_code_2 : Icons.qr_code_2),
-                      label: Text(_link == "direta" ? "Criar rede e mostrar QR" : "Receber neste aparelho"),
+                      icon: Icon(_link == "direta" ? Icons.wifi_tethering : Icons.qr_code_2),
+                      label: Text(_link == "direta" ? "Criar rede e esperar o outro" : "Receber neste aparelho"),
                     ),
                     const SizedBox(height: 8),
                     OutlinedButton.icon(
                       onPressed: () {
                         if (_link == "direta") {
                           setState(() => _role = "receive");
-                          _openCamera();
+                          _blueReceive();
                         } else {
                           setState(() => _role = "send");
                           _scanPeers();
                         }
                       },
-                      icon: Icon(_link == "direta" ? Icons.photo_camera_outlined : Icons.photo_camera_outlined),
-                      label: Text(_link == "direta" ? "Ler o QR e receber" : "Enviar para o outro"),
+                      icon: Icon(_link == "direta" ? Icons.bluetooth : Icons.photo_camera_outlined),
+                      label: Text(_link == "direta" ? "Entrar pelo Bluetooth" : "Enviar para o outro"),
                     ),
                   ],
                 ],
@@ -1076,7 +1107,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
       return ListView(
         children: [
           Text(_link == "direta"
-              ? "Este aparelho cria a rede e mostra o QR. O outro só lê e entra para receber."
+              ? "Este aparelho cria a rede. O Bluetooth passa a senha. O outro entra sozinho."
               : "Os dois no mesmo Wi-Fi. Aponte a câmera para o QR ou toque no aparelho da lista."),
           const SizedBox(height: 12),
           if (_direct.isNotEmpty) Text(_direct),

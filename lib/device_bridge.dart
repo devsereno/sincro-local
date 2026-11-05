@@ -166,6 +166,36 @@ class DeviceBridge {
     } catch (_) {}
   }
 
+  static Future<bool> blueListen(String payload) async {
+    try {
+      return await _channel.invokeMethod<bool>("blueListen", {"payload": payload}) == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<String?> blueFetch() async {
+    try {
+      return await _channel.invokeMethod<String>("blueFetch");
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<String> blueStatus() async {
+    try {
+      return await _channel.invokeMethod<String>("blueStatus") ?? "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  static Future<void> blueStop() async {
+    try {
+      await _channel.invokeMethod("blueStop");
+    } catch (_) {}
+  }
+
   static Future<Map<String, dynamic>> p2pStatus() async {
     try {
       final raw = await _channel.invokeMethod<dynamic>("p2pStatus");
