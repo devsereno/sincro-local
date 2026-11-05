@@ -233,6 +233,7 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
   String _directSsid = "";
   String _directPass = "";
   String _directIp = "";
+  String _directCode = makeCode();
   final _name = TextEditingController();
 
   Future<void> _ownDirect() async {
@@ -1064,7 +1065,12 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
               scheme: "sincro",
               host: _directIp,
               port: 45921,
-              queryParameters: {"s": _directSsid, "k": _directPass, "n": _name.text.trim().isEmpty ? "Sincro" : _name.text.trim()},
+              queryParameters: {
+                "s": _directSsid,
+                "k": _directPass,
+                "c": _directCode,
+                "n": _name.text.trim().isEmpty ? "Sincro" : _name.text.trim(),
+              },
             ).toString()
           : "";
       return ListView(

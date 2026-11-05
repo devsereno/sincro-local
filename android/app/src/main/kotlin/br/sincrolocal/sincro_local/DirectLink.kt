@@ -167,18 +167,19 @@ class DirectLink(private val activity: MainActivity) {
 
     private fun hotspotAddress(): String? {
         val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
+        var fallback: String? = null
         for (iface in interfaces) {
             val name = iface.name ?: continue
-            if (name.startsWith("wlan") || name.startsWith("ap") || name.startsWith("swlan")) {
-                for (addr in iface.inetAddresses) {
-                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
-                        val host = addr.hostAddress ?: continue
-                        if (host.startsWith("192.168.")) return host
-                    }
+            for (addr in iface.inetAddresses) {
+                if (addr !is Inet4Address || addr.isLoopbackAddress) continue
+                val host = addr.hostAddress ?: continue
+                if (host.startsWith("192.168.43.")) return host
+                if (name.startsWith("ap") || name.startsWith("swlan") || name.startsWith("wlan1")) {
+                    if (host.startsWith("192.168.")) fallback = host
                 }
             }
         }
-        return null
+        return fallback
     }
 
     fun find() {
