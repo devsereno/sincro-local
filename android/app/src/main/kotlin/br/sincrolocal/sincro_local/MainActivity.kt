@@ -44,11 +44,19 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "openHotspotSettings" -> {
-                        try {
-                            startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
-                        } catch (_: Exception) {
-                            openAppSettings()
+                        val intents = listOf(
+                            Intent("android.settings.TETHER_SETTINGS"),
+                            Intent(Settings.ACTION_WIRELESS_SETTINGS),
+                        )
+                        var opened = false
+                        for (intent in intents) {
+                            try {
+                                startActivity(intent)
+                                opened = true
+                                break
+                            } catch (_: Exception) {}
                         }
+                        if (!opened) openAppSettings()
                         result.success(null)
                     }
                     "gallery" -> {

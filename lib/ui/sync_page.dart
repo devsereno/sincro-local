@@ -118,63 +118,54 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
   }
 
   Future<void> _receive({required bool direct}) async {
-    await DeviceBridge.p2pStop();
-    if (direct) {
-      final ok = await DeviceBridge.p2pName(_name.text.trim().isEmpty ? "Sincro" : _name.text.trim());
-      if (!ok && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Permita aparelhos próximos e toque de novo em Receber.")),
-        );
-        return;
+    try {
+      await DeviceBridge.p2pStop();
+      final allowed = await DeviceBridge.hasAllFilesAccess();
+      if (!allowed) {
+        await DeviceBridge.requestAllFilesAccess();
       }
-    }
-    final allowed = await DeviceBridge.hasAllFilesAccess();
-    if (!allowed) {
-      await DeviceBridge.requestAllFilesAccess();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Autorize o acesso aos arquivos e toque de novo em Receber.")),
+      _volumes = await DeviceBridge.volumes();
+      final room = IncomingRoom(deviceName: await DeviceBridge.deviceModel());
+      await room.start((offers) {
+        return placeFiles(
+          files: [
+            for (final offer in offers) (name: offer.name, bytes: offer.bytes, path: offer.id),
+          ],
+          mode: widget.settings.mode,
+          internalFree: _internal?.freeBytes ?? 0,
+          sdFree: _sd?.freeBytes ?? 0,
+          fat32: _sd?.fat32 ?? false,
+          internalBufferGb: widget.settings.internalBufferGb,
+          sdBufferMb: widget.settings.sdBufferMb,
         );
-      }
-      return;
-    }
-    _volumes = await DeviceBridge.volumes();
-    final room = IncomingRoom(deviceName: await DeviceBridge.deviceModel());
-    await room.start((offers) {
-      return placeFiles(
-        files: [
-          for (final offer in offers) (name: offer.name, bytes: offer.bytes, path: offer.id),
-        ],
-        mode: widget.settings.mode,
-        internalFree: _internal?.freeBytes ?? 0,
-        sdFree: _sd?.freeBytes ?? 0,
-        fat32: _sd?.fat32 ?? false,
-        internalBufferGb: widget.settings.internalBufferGb,
-        sdBufferMb: widget.settings.sdBufferMb,
-      );
-    }, internalPath: _internal?.path ?? "/storage/emulated/0", sdPath: _sd?.path, announce: !direct);
-    room.addListener(() {
+      }, internalPath: _internal?.path ?? "/storage/emulated/0", sdPath: _sd?.path, announce: !direct);
+      room.addListener(() {
+        if (!mounted) return;
+        if (room.ended) {
+          _backToStart();
+          return;
+        }
+        setState(() {});
+        if (room.finished) _saveReceive(room);
+      });
+      await DeviceBridge.hold();
+      await WakelockPlus.enable();
       if (!mounted) return;
-      if (room.ended) {
-        _backToStart();
-        return;
+      setState(() {
+        _link = direct ? "direta" : "casa";
+        _role = "receive";
+        _room = room;
+        _direct = "";
+        _directSsid = "";
+        _directPass = "";
+        _directIp = "";
+      });
+      _indexRoom(room);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Não abriu: $error")));
       }
-      setState(() {});
-      if (room.finished) _saveReceive(room);
-    });
-    await DeviceBridge.hold();
-    await WakelockPlus.enable();
-    setState(() {
-      _link = direct ? "direta" : "casa";
-      _role = "receive";
-      _room = room;
-      _direct = "";
-      _directSsid = "";
-      _directPass = "";
-      _directIp = "";
-    });
-    _indexRoom(room);
-    if (direct) await _ownDirect();
+    }
   }
 
   Future<void> _indexRoom(IncomingRoom room) async {
