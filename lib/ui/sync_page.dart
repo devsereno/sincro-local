@@ -17,6 +17,7 @@ import "../settings_store.dart";
 import "../sync.dart";
 import "../transfer.dart";
 import "file_groups.dart";
+import "battery_meter.dart";
 import "hotspot_guide.dart";
 import "transfer_panel.dart";
 
