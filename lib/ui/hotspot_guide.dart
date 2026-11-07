@@ -2,7 +2,7 @@ import "package:flutter/material.dart";
 
 import "../device_bridge.dart";
 
-class HotspotGuide extends StatelessWidget {
+class HotspotGuide extends StatefulWidget {
   const HotspotGuide({super.key, required this.brand});
 
   final String brand;
@@ -17,8 +17,21 @@ class HotspotGuide extends StatelessWidget {
     return "outro";
   }
 
+  @override
+  State<HotspotGuide> createState() => _HotspotGuideState();
+}
+
+class _HotspotGuideState extends State<HotspotGuide> with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
   String get _path {
-    switch (brand) {
+    switch (widget.brand) {
       case "samsung":
         return "Configurações → Conexões → Ponto de acesso móvel e roteamento";
       case "xiaomi":
@@ -34,7 +47,7 @@ class HotspotGuide extends StatelessWidget {
   }
 
   String get _name {
-    switch (brand) {
+    switch (widget.brand) {
       case "samsung":
         return "Ponto de acesso móvel";
       case "xiaomi":
@@ -50,6 +63,11 @@ class HotspotGuide extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        FadeTransition(
+          opacity: Tween(begin: 0.5, end: 1.0).animate(_pulse),
+          child: const Icon(Icons.wifi_tethering, size: 48, color: Color(0xFF1F8A57)),
+        ),
+        const SizedBox(height: 12),
         const Text("Ligue o ponto de acesso neste aparelho", style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
         const SizedBox(height: 12),
         Text("1. Abra $_path"),

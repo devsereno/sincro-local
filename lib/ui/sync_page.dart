@@ -951,54 +951,38 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
             ? Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text("Escolha uma forma de ligar os aparelhos. Só uma fica ativa por vez."),
+                  const Text("Os dois no mesmo Wi-Fi. Quem recebe mostra o QR. Quem envia lê e já entra."),
                   const SizedBox(height: 16),
                   FilledButton.icon(
-                    onPressed: () => setState(() => _link = "casa"),
-                    icon: const Icon(Icons.wifi),
-                    label: const Text("Wi-Fi de casa"),
+                    onPressed: () => _receive(direct: false),
+                    icon: const Icon(Icons.qr_code_2),
+                    label: const Text("Receber neste aparelho"),
                   ),
                   const SizedBox(height: 8),
                   OutlinedButton.icon(
-                    onPressed: () => setState(() => _link = "direta"),
-                    icon: const Icon(Icons.wifi_tethering),
-                    label: const Text("Rede direta"),
+                    onPressed: () {
+                      setState(() => _role = "send");
+                      _scanPeers();
+                    },
+                    icon: const Icon(Icons.photo_camera_outlined),
+                    label: const Text("Enviar para o outro"),
                   ),
-                  if (_link != null) ...[
-                    const SizedBox(height: 20),
-                    Text(_link == "casa"
-                        ? "Os dois no mesmo Wi-Fi. Quem recebe mostra o QR. Quem envia lê e já entra."
-                        : "Um liga o ponto de acesso. O outro entra nessa rede. Depois os dois se falam aqui."),
-                    const SizedBox(height: 12),
-                    if (_link == "direta") ...[
-                      FutureBuilder<String>(
-                        future: HotspotGuide.detect(),
-                        builder: (context, snapshot) => HotspotGuide(brand: snapshot.data ?? "outro"),
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                    FilledButton.icon(
-                      onPressed: () {
-                        if (_link == "direta") {
-                          setState(() => _role = "receive");
-                          _receive(direct: false);
-                        } else {
-                          _receive(direct: false);
-                        }
-                      },
-                      icon: const Icon(Icons.qr_code_2),
-                      label: const Text("Receber neste aparelho"),
-                    ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        setState(() => _role = "send");
-                        _scanPeers();
-                      },
-                      icon: const Icon(Icons.photo_camera_outlined),
-                      label: const Text("Enviar para o outro"),
-                    ),
-                  ],
+                  const SizedBox(height: 16),
+                  TextButton.icon(
+                    onPressed: () async {
+                      final brand = await HotspotGuide.detect();
+                      if (!mounted) return;
+                      showModalBottomSheet(
+                        context: context,
+                        builder: (_) => Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: HotspotGuide(brand: brand),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.help_outline),
+                    label: const Text("Não estão na mesma rede?"),
+                  ),
                 ],
               )
             : room != null
