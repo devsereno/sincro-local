@@ -18,6 +18,7 @@ import "../sync.dart";
 import "../transfer.dart";
 import "file_groups.dart";
 import "battery_meter.dart";
+import "flow_page.dart";
 import "hotspot_guide.dart";
 import "transfer_panel.dart";
 
@@ -945,50 +946,18 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
             ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: _role == null
-            ? Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text("Os dois no mesmo Wi-Fi. Quem recebe mostra o QR. Quem envia lê e já entra."),
-                  const SizedBox(height: 16),
-                  FilledButton.icon(
-                    onPressed: () => _receive(direct: false),
-                    icon: const Icon(Icons.qr_code_2),
-                    label: const Text("Receber neste aparelho"),
-                  ),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      setState(() => _role = "send");
-                      _scanPeers();
-                    },
-                    icon: const Icon(Icons.photo_camera_outlined),
-                    label: const Text("Enviar para o outro"),
-                  ),
-                  const SizedBox(height: 16),
-                  TextButton.icon(
-                    onPressed: () async {
-                      final brand = await HotspotGuide.detect();
-                      if (!mounted) return;
-                      showModalBottomSheet(
-                        context: context,
-                        builder: (_) => Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: HotspotGuide(brand: brand),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.help_outline),
-                    label: const Text("Não estão na mesma rede?"),
-                  ),
-                ],
-              )
-            : room != null
-                ? _receiveBody(room)
-                : _sendBody(),
-      ),
+      body: _role == null
+          ? FlowPage(
+              onReceive: () => _receive(direct: false),
+              onSend: () {
+                setState(() => _role = "send");
+                _scanPeers();
+              },
+            )
+          : Padding(
+              padding: const EdgeInsets.all(20),
+              child: room != null ? _receiveBody(room) : _sendBody(),
+            ),
     );
   }
 
