@@ -17,7 +17,7 @@ import "../settings_store.dart";
 import "../sync.dart";
 import "../transfer.dart";
 import "file_groups.dart";
-import "battery_meter.dart";
+import "hotspot_guide.dart";
 import "transfer_panel.dart";
 
 class SyncPage extends StatefulWidget {
@@ -967,33 +967,35 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
                     const SizedBox(height: 20),
                     Text(_link == "casa"
                         ? "Os dois no mesmo Wi-Fi. Quem recebe mostra o QR. Quem envia lê e já entra."
-                        : "Quem envia cria a rede. O Bluetooth passa a senha. Quem recebe entra sozinho."),
+                        : "Um liga o ponto de acesso. O outro entra nessa rede. Depois os dois se falam aqui."),
                     const SizedBox(height: 12),
+                    if (_link == "direta") ...[
+                      FutureBuilder<String>(
+                        future: HotspotGuide.detect(),
+                        builder: (context, snapshot) => HotspotGuide(brand: snapshot.data ?? "outro"),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
                     FilledButton.icon(
                       onPressed: () {
                         if (_link == "direta") {
-                          setState(() => _role = "send");
-                          _ownDirect();
+                          setState(() => _role = "receive");
+                          _receive(direct: false);
                         } else {
                           _receive(direct: false);
                         }
                       },
-                      icon: Icon(_link == "direta" ? Icons.wifi_tethering : Icons.qr_code_2),
-                      label: Text(_link == "direta" ? "Criar rede e esperar o outro" : "Receber neste aparelho"),
+                      icon: const Icon(Icons.qr_code_2),
+                      label: const Text("Receber neste aparelho"),
                     ),
                     const SizedBox(height: 8),
                     OutlinedButton.icon(
                       onPressed: () {
-                        if (_link == "direta") {
-                          setState(() => _role = "receive");
-                          _blueReceive();
-                        } else {
-                          setState(() => _role = "send");
-                          _scanPeers();
-                        }
+                        setState(() => _role = "send");
+                        _scanPeers();
                       },
-                      icon: Icon(_link == "direta" ? Icons.bluetooth : Icons.photo_camera_outlined),
-                      label: Text(_link == "direta" ? "Entrar pelo Bluetooth" : "Enviar para o outro"),
+                      icon: const Icon(Icons.photo_camera_outlined),
+                      label: const Text("Enviar para o outro"),
                     ),
                   ],
                 ],
