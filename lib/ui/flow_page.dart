@@ -28,16 +28,13 @@ class _FlowPageState extends State<FlowPage> with SingleTickerProviderStateMixin
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF06140C),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        title: const Text("SincroLocal"),
-        leading: _step > 0
-            ? IconButton(onPressed: () => setState(() => _step--), icon: const Icon(Icons.arrow_back))
-            : null,
-      ),
       body: Padding(
         padding: const EdgeInsets.all(20),
-        child: _step == 0 ? _choice() : _method == "hotspot" ? _hotspot() : _wifi(),
+        child: _step == 0
+            ? _choice()
+            : _step == 1 && _method == "hotspot"
+                ? _hotspot()
+                : _ready(),
       ),
     );
   }
@@ -99,11 +96,12 @@ class _FlowPageState extends State<FlowPage> with SingleTickerProviderStateMixin
     );
   }
 
-  Widget _wifi() {
+  Widget _ready() {
+    final via = _method == "hotspot" ? "ponto de acesso" : "Wi-Fi";
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text("Os dois no mesmo Wi-Fi", style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+        Text("Os dois na mesma rede ($via)", style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
         const SizedBox(height: 8),
         const Text("Quem recebe mostra o QR. Quem envia lê e já entra.", style: TextStyle(color: Colors.white70)),
         const Spacer(),

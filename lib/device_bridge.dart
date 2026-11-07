@@ -98,6 +98,14 @@ class DeviceBridge {
     } catch (_) {}
   }
 
+  static Future<void> openHotspotSettings() async {
+    try {
+      await _channel.invokeMethod("openHotspotSettings");
+    } catch (_) {
+      await openSettings();
+    }
+  }
+
   static Future<Map<dynamic, dynamic>> galleryPage({
     required String kind,
     required int offset,

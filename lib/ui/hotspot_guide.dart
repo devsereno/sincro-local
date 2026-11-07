@@ -79,7 +79,9 @@ class _HotspotGuideState extends State<HotspotGuide> with SingleTickerProviderSt
         const Text("4. Volte aqui. Os dois na mesma rede, a transferência começa."),
         const SizedBox(height: 16),
         FilledButton.icon(
-          onPressed: DeviceBridge.openSettings,
+          onPressed: () async {
+            await DeviceBridge.openHotspotSettings();
+          },
           icon: const Icon(Icons.settings),
           label: const Text("Abrir configurações"),
         ),

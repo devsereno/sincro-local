@@ -43,6 +43,14 @@ class MainActivity : FlutterActivity() {
                         openAppSettings()
                         result.success(null)
                     }
+                    "openHotspotSettings" -> {
+                        try {
+                            startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                        } catch (_: Exception) {
+                            openAppSettings()
+                        }
+                        result.success(null)
+                    }
                     "gallery" -> {
                         val kind = call.argument<String>("kind") ?: "images"
                         val limit = call.argument<Int>("limit") ?: 250
