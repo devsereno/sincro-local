@@ -351,9 +351,15 @@ class MainActivity : FlutterActivity() {
 
     private fun requestAllFiles() {
         if (Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()) return
-        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-        intent.data = Uri.parse("package:$packageName")
-        startActivity(intent)
+        try {
+            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+            intent.data = Uri.parse("package:$packageName")
+            startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            } catch (_: Exception) {}
+        }
     }
 
     private fun wifiAddress(): String? {

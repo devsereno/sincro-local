@@ -123,6 +123,12 @@ class _SyncPageState extends State<SyncPage> with WidgetsBindingObserver {
       final allowed = await DeviceBridge.hasAllFilesAccess();
       if (!allowed) {
         await DeviceBridge.requestAllFilesAccess();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Autorize o acesso aos arquivos e toque de novo em Receber.")),
+          );
+        }
+        return;
       }
       _volumes = await DeviceBridge.volumes();
       final room = IncomingRoom(deviceName: await DeviceBridge.deviceModel());
