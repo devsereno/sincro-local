@@ -1,19 +1,54 @@
 workflows:
   android-apk:
-    name: SincroLocal APK
+    name: SincroLocal APK - diagnostico preventivo
     max_build_duration: 60
     instance_type: mac_mini_m2
     environment:
       flutter: stable
     scripts:
-      - name: Ícone
+      - name: Diagnostico do ambiente e configuracoes
         script: |
+          set -eu
+          echo '===== Flutter e Dart ====='
+          flutter --version
+          dart --version
+          echo '===== Java ====='
+          java -version
+          echo '===== Android SDK ====='
+          echo "ANDROID_HOME=${ANDROID_HOME:-nao definido}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-nao definido}"
+          echo '===== Versoes declaradas no projeto ====='
+          grep -nE 'com.android.application|org.jetbrains.kotlin.android|flutter-plugin-loader' android/settings.gradle || true
+          grep -n '^distributionUrl=' android/gradle/wrapper/gradle-wrapper.properties || true
+          grep -nE 'android.builtInKotlin|android.newDsl|org.gradle.jvmargs' android/gradle.properties || true
+          echo '===== Verificacao de arquivos Gradle duplicados ====='
+          for base in android/build.gradle android/settings.gradle android/app/build.gradle; do
+            if [ -f "$base" ] && [ -f "$base.kts" ]; then
+              echo "ERRO: arquivos conflitantes: $base e $base.kts" >&2
+              exit 1
+            fi
+          done
+          echo '===== Gradle wrapper ====='
+          (cd android && sh ./gradlew --version)
+      - name: Icone
+        script: |
+          set -eu
           mkdir -p assets android/app/src/main/res/mipmap-mdpi android/app/src/main/res/mipmap-hdpi android/app/src/main/res/mipmap-xhdpi android/app/src/main/res/mipmap-xxhdpi android/app/src/main/res/mipmap-xxxhdpi
           python3 -c "import base64,pathlib; pathlib.Path('assets/brand.png').write_bytes(base64.b64decode(pathlib.Path('tool/brand.b64').read_text()))"
           for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do cp assets/brand.png android/app/src/main/res/mipmap-$d/ic_launcher.png; done
-      - name: Pacotes
-        script: flutter pub get
-      - name: APK
-        script: flutter build apk --release
+      - name: Dependencias Flutter
+        script: |
+          set -eu
+          flutter pub get
+          flutter pub outdated || true
+      - name: Analise estatica
+        script: |
+          flutter analyze
+      - name: Testes Flutter
+        script: |
+          flutter test
+      - name: APK release
+        script: |
+          flutter build apk --release --verbose
     artifacts:
       - build/app/outputs/**/*.apk
